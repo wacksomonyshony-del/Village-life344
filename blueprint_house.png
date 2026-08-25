@@ -1,6 +1,6 @@
 {
   "parent": "item/generated",
   "textures": {
-    "layer0": "villageevolution:item/blueprint_clinic"
+    "layer0": "villageevolution:item/blueprint_storage"
   }
 }

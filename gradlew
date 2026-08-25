@@ -1,0 +1,13 @@
+{
+  "itemGroup.villageevolution": "Village Evolution",
+  "item.villageevolution.blueprint_town_hall": "Town Hall Blueprint",
+  "item.villageevolution.blueprint_house": "House Blueprint",
+  "item.villageevolution.blueprint_farm": "Farm Blueprint",
+  "item.villageevolution.blueprint_storage": "Storage Blueprint",
+  "item.villageevolution.blueprint_blacksmith": "Blacksmith Blueprint",
+  "item.villageevolution.blueprint_market": "Market Blueprint",
+  "item.villageevolution.blueprint_clinic": "Clinic Blueprint",
+  "item.villageevolution.blueprint_watchtower": "Watchtower Blueprint",
+  "item.villageevolution.blueprint_wall_gate": "Wall Gate Blueprint",
+  "item.villageevolution.blueprint_hospital": "Hospital Blueprint"
+}

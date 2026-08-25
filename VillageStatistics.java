@@ -1,61 +1,32 @@
-package com.villageevolution.mod.util;
+package com.villageevolution.mod;
 
-import com.villageevolution.mod.VillagerEvolutionMod;
-import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.goal.GoalSelector;
+import com.villageevolution.mod.event.VillageTickHandler;
+import com.villageevolution.mod.event.VillagerJoinHandler;
+import com.villageevolution.mod.registry.ModCreativeTab;
+import com.villageevolution.mod.registry.ModItems;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
-import java.lang.reflect.Field;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.WeakHashMap;
+@Mod(VillagerEvolutionMod.MOD_ID)
+public class VillagerEvolutionMod {
 
-/**
- * Small reflection helper that lets us add custom AI goals to vanilla mobs
- * (like Villager) without needing an Access Transformer file. Forge has run
- * on Mojang's official mapping names at runtime since 1.17, so the plain
- * field name "goalSelector" resolves correctly both in the dev environment
- * and in a production/obfuscated install.
- *
- * If this ever throws NoSuchFieldException after a Minecraft update, check
- * the current field name for GoalSelector inside net.minecraft.world.entity.Mob
- * and update FIELD_NAME below to match.
- */
-public final class GoalAccessHelper {
+    public static final String MOD_ID = "villageevolution";
+    public static final Logger LOGGER = LogManager.getLogger();
 
-    private static final String FIELD_NAME = "goalSelector";
-    private static Field goalSelectorField;
+    public VillagerEvolutionMod() {
+        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
-    // Tracks which goal classes we've already added to which mob instances,
-    // so re-firing EntityJoinLevelEvent (e.g. on dimension change) doesn't
-    // stack duplicate goals onto the same entity.
-    private static final Map<Mob, Set<Class<?>>> PATCHED = new WeakHashMap<>();
+        ModItems.ITEMS.register(modEventBus);
+        ModCreativeTab.TABS.register(modEventBus);
 
-    private GoalAccessHelper() {
-    }
+        MinecraftForge.EVENT_BUS.register(new VillageTickHandler());
+        MinecraftForge.EVENT_BUS.register(new VillagerJoinHandler());
 
-    public static void addGoal(Mob mob, int priority, Goal goal) {
-        Set<Class<?>> alreadyAdded = PATCHED.computeIfAbsent(mob, m -> new HashSet<>());
-        if (!alreadyAdded.add(goal.getClass())) return;
-
-        try {
-            GoalSelector selector = getGoalSelector(mob);
-            if (selector != null) {
-                selector.addGoal(priority, goal);
-            }
-        } catch (ReflectiveOperationException e) {
-            VillagerEvolutionMod.LOGGER.error("Failed to add custom AI goal {} to {}",
-                    goal.getClass().getSimpleName(), mob, e);
-        }
-    }
-
-    private static GoalSelector getGoalSelector(Mob mob) throws ReflectiveOperationException {
-        if (goalSelectorField == null) {
-            Field field = Mob.class.getDeclaredField(FIELD_NAME);
-            field.setAccessible(true);
-            goalSelectorField = field;
-        }
-        return (GoalSelector) goalSelectorField.get(mob);
+        LOGGER.info("Village Evolution initialized: villages track civilization state, " +
+                "expand automatically, and villagers gather/deliver/build, repair golems, and heal each other.");
     }
 }

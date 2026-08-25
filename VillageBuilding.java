@@ -1,56 +1,84 @@
-package com.villageevolution.mod.event;
+package com.villageevolution.mod.item;
 
-import com.villageevolution.mod.ai.ConstructionWorkGoal;
-import com.villageevolution.mod.ai.DeliverMaterialsGoal;
-import com.villageevolution.mod.ai.FarmerContributeFoodGoal;
-import com.villageevolution.mod.ai.GatherMaterialsGoal;
-import com.villageevolution.mod.ai.HealWoundedVillagerGoal;
-import com.villageevolution.mod.ai.RepairIronGolemGoal;
-import com.villageevolution.mod.util.GoalAccessHelper;
+import com.villageevolution.mod.village.BuildingType;
+import com.villageevolution.mod.village.ConstructionProject;
+import com.villageevolution.mod.village.VillageBuilding;
+import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.entity.npc.VillagerProfession;
-import net.minecraftforge.event.entity.EntityJoinLevelEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResultHolder;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+
+import java.util.List;
 
 /**
- * Equips every villager with the mod's "advanced API": individual task
- * goals (gather/deliver/build), golem repair, and (profession-gated)
- * cleric healing + farmer food contribution.
- *
- * Goal priorities (lower number = checked first): clerics healing the
- * wounded outranks everything, since a dying villager is more urgent than
- * a construction job; golem repair and construction work come next;
- * gathering/delivering/food are lowest priority so they yield to the above.
+ * Right-click while standing in/near a village to manually queue
+ * construction of this building type (villagers still have to gather
+ * materials and build it - this just tells the village what to prioritize
+ * next, on top of the automatic-expansion logic in VillageManager).
  */
-public class VillagerJoinHandler {
+public class BlueprintItem extends Item {
 
-    @SubscribeEvent
-    public void onJoin(EntityJoinLevelEvent event) {
-        if (event.getLevel().isClientSide()) return;
-        if (!(event.getEntity() instanceof Villager villager)) return;
-        if (!(event.getLevel() instanceof ServerLevel serverLevel)) return;
+    private final BuildingType buildingType;
 
-        VillageSavedData data = VillageSavedData.get(serverLevel);
-        data.findOrCreate(villager.blockPosition(), VillageManager.SEARCH_RADIUS);
+    public BlueprintItem(BuildingType buildingType, Properties properties) {
+        super(properties);
+        this.buildingType = buildingType;
+    }
 
-        // Universal caretaking + civilization-building behaviors.
-        GoalAccessHelper.addGoal(villager, 6, new RepairIronGolemGoal(villager));
-        GoalAccessHelper.addGoal(villager, 7, new ConstructionWorkGoal(villager));
-        GoalAccessHelper.addGoal(villager, 8, new DeliverMaterialsGoal(villager));
-        GoalAccessHelper.addGoal(villager, 9, new GatherMaterialsGoal(villager));
+    public BuildingType getBuildingType() {
+        return buildingType;
+    }
 
-        // Profession-specific responsibilities.
-        // NOTE: if getProfession() ends up returning a Holder<VillagerProfession> on your
-        // exact build, compare with `.value() == VillagerProfession.X` instead.
-        VillagerProfession profession = villager.getVillagerData().getProfession();
-        if (profession == VillagerProfession.CLERIC) {
-            GoalAccessHelper.addGoal(villager, 5, new HealWoundedVillagerGoal(villager));
+    @Override
+    public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+        if (!(level instanceof ServerLevel serverLevel)) {
+            return InteractionResultHolder.success(stack);
         }
-        if (profession == VillagerProfession.FARMER) {
-            GoalAccessHelper.addGoal(villager, 10, new FarmerContributeFoodGoal(villager));
+
+        BlockPos playerPos = player.blockPosition();
+        VillageInstance village = VillageSavedData.get(serverLevel).findOrCreate(playerPos, VillageManager.SEARCH_RADIUS);
+
+        if (village.hasActiveProjectFor(buildingType)) {
+            player.displayClientMessage(Component.literal(
+                    "A " + buildingType.getDisplayName() + " project is already underway in this village."), true);
+            return InteractionResultHolder.fail(stack);
         }
+        if (!buildingType.isUnlocked(village.getPopulation(), village.getStage())) {
+            player.displayClientMessage(Component.literal(
+                    "This village isn't ready for a " + buildingType.getDisplayName()
+                            + " yet (needs " + buildingType.getMinPopulation() + "+ population, "
+                            + buildingType.getMinStage().getDisplayName() + "+ stage)."), true);
+            return InteractionResultHolder.fail(stack);
+        }
+
+        List<VillageBuilding> existing = village.getBuildingsOfType(buildingType);
+        boolean upgrade = !existing.isEmpty() && existing.get(0).canUpgrade();
+
+        Direction facing = player.getDirection();
+        if (upgrade) {
+            VillageBuilding building = existing.get(0);
+            village.addProject(new ConstructionProject(buildingType, building.getLevel() + 1,
+                    building.getOrigin(), building.getFacing(), true));
+            player.displayClientMessage(Component.literal(
+                    "Queued an upgrade for the village's " + buildingType.getDisplayName() + "."), true);
+        } else {
+            BlockPos site = playerPos.relative(facing, 3);
+            village.addProject(new ConstructionProject(buildingType, 1, site, facing, false));
+            player.displayClientMessage(Component.literal(
+                    "Queued construction of a new " + buildingType.getDisplayName() + "."), true);
+        }
+
+        if (!player.getAbilities().instabuild) stack.shrink(1);
+        return InteractionResultHolder.success(stack);
     }
 }

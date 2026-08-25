@@ -1,122 +1,121 @@
 package com.villageevolution.mod.ai;
 
-import com.villageevolution.mod.util.VillagerInjuryHelper;
+import com.villageevolution.mod.util.VillagerTaskData;
+import com.villageevolution.mod.village.ResourceType;
 import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
-import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 
 /**
- * "Clerics heal injured villagers". Cleric villagers act as the village
- * medic: they prioritize whichever wounded villager is most critically
- * injured (see VillagerInjuryHelper), not just the nearest one, then walk
- * over, heal them, and apply Regeneration.
+ * Profession-specific responsibility: farmer villagers periodically walk
+ * their harvested crops back to the village's food stockpile instead of
+ * just hoarding them in their trading inventory.
  */
-public class HealWoundedVillagerGoal extends Goal {
+public class FarmerContributeFoodGoal extends Goal {
 
-    private static final double SEARCH_RADIUS = 16.0;
-    private static final double HEAL_RANGE = 2.5;
-    private static final int HEAL_INTERVAL = 20;
-    private static final float HEAL_AMOUNT = 3.0F;
-    private static final int MAX_PURSUIT_TICKS = 600;
+    private static final List<Item> FOOD_ITEMS = List.of(
+            Items.WHEAT, Items.CARROT, Items.POTATO, Items.BEETROOT, Items.BREAD);
+    private static final int CONTRIBUTE_THRESHOLD = 6;
 
-    private final Villager cleric;
-    private Villager patient;
-    private int healCooldown;
-    private int pursuitTicks;
+    private final Villager farmer;
+    private BlockPos targetAnchor;
+    private boolean delivering;
 
-    public HealWoundedVillagerGoal(Villager cleric) {
-        this.cleric = cleric;
-        this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK));
+    public FarmerContributeFoodGoal(Villager farmer) {
+        this.farmer = farmer;
+        this.setFlags(EnumSet.of(Flag.MOVE));
     }
 
     @Override
     public boolean canUse() {
-        if (cleric.isBaby() || cleric.isSleeping()) return false;
-        if (cleric.getRandom().nextInt(60) != 0) return false;
-
-        List<Villager> wounded = cleric.level().getEntitiesOfClass(
-                Villager.class,
-                cleric.getBoundingBox().inflate(SEARCH_RADIUS),
-                v -> v != cleric && v.isAlive() && VillagerInjuryHelper.isWounded(v)
-        );
-        if (wounded.isEmpty()) return false;
-
-        // Most critically injured first; ties broken by distance.
-        wounded.sort(Comparator
-                .comparingDouble(VillagerInjuryHelper::severity).reversed()
-                .thenComparingDouble(v -> v.distanceToSqr(cleric)));
-        this.patient = wounded.get(0);
-        return true;
+        if (farmer.isBaby()) return false;
+        if (VillagerTaskData.getTask(farmer) != VillagerTaskData.Task.IDLE) return false;
+        if (farmer.getRandom().nextInt(100) != 0) return false;
+        return countCarriedFood() >= CONTRIBUTE_THRESHOLD && findNearestVillageAnchor() != null;
     }
 
     @Override
     public boolean canContinueToUse() {
-        return patient != null
-                && patient.isAlive()
-                && VillagerInjuryHelper.isWounded(patient)
-                && pursuitTicks < MAX_PURSUIT_TICKS;
+        return delivering && targetAnchor != null;
     }
 
     @Override
     public void start() {
-        pursuitTicks = 0;
-        healCooldown = 0;
+        delivering = true;
+        targetAnchor = findNearestVillageAnchor();
     }
 
     @Override
     public void stop() {
-        patient = null;
-        cleric.getNavigation().stop();
-    }
-
-    @Override
-    public boolean isInterruptable() {
-        return true;
+        delivering = false;
+        farmer.getNavigation().stop();
     }
 
     @Override
     public void tick() {
-        if (patient == null) return;
-        pursuitTicks++;
-        cleric.getLookControl().setLookAt(patient, 30.0F, 30.0F);
-
-        if (cleric.distanceToSqr(patient) > HEAL_RANGE * HEAL_RANGE) {
-            cleric.getNavigation().moveTo(patient, 0.5D);
+        if (targetAnchor == null || !(farmer.level() instanceof ServerLevel level)) {
+            delivering = false;
             return;
         }
 
-        cleric.getNavigation().stop();
-        if (--healCooldown <= 0) {
-            healCooldown = HEAL_INTERVAL;
-            boolean wasWounded = VillagerInjuryHelper.isWounded(patient);
-            patient.heal(HEAL_AMOUNT);
-            patient.addEffect(new MobEffectInstance(MobEffects.REGENERATION, 60, 0));
-
-            if (cleric.level() instanceof ServerLevel serverLevel) {
-                serverLevel.sendParticles(ParticleTypes.EFFECT,
-                        patient.getX(), patient.getY() + patient.getBbHeight() + 0.2, patient.getZ(),
-                        6, 0.3, 0.2, 0.3, 0.02);
-
-                if (wasWounded && !VillagerInjuryHelper.isWounded(patient)) {
-                    VillageInstance village = VillageSavedData.get(serverLevel)
-                            .findNear(cleric.blockPosition(), VillageManager.SEARCH_RADIUS);
-                    if (village != null) village.getStatistics().incrementVillagersHealed();
-                }
-            }
-            cleric.level().playSound(null, cleric.blockPosition(),
-                    SoundEvents.HONEY_DRINK, SoundSource.NEUTRAL, 0.5F, 1.4F);
+        double distSqr = farmer.blockPosition().distSqr(targetAnchor);
+        if (distSqr > 3.0 * 3.0) {
+            farmer.getNavigation().moveTo(targetAnchor.getX() + 0.5, targetAnchor.getY(), targetAnchor.getZ() + 0.5, 0.5D);
+            return;
         }
+
+        farmer.getNavigation().stop();
+        int deposited = depositFood();
+        if (deposited > 0) {
+            VillageInstance village = VillageSavedData.get(level).findNear(targetAnchor, VillageManager.SEARCH_RADIUS);
+            if (village != null) {
+                village.addResource(ResourceType.FOOD, deposited);
+                village.getStatistics().addFoodProduced(deposited);
+            }
+            level.sendParticles(ParticleTypes.HAPPY_VILLAGER,
+                    farmer.getX(), farmer.getY() + 1, farmer.getZ(), 8, 0.4, 0.3, 0.4, 0.02);
+            level.playSound(null, farmer.blockPosition(), SoundEvents.VILLAGER_YES, SoundSource.NEUTRAL, 0.6F, 1.0F);
+        }
+        delivering = false;
+    }
+
+    private int countCarriedFood() {
+        int total = 0;
+        for (int i = 0; i < farmer.getInventory().getContainerSize(); i++) {
+            ItemStack stack = farmer.getInventory().getItem(i);
+            if (FOOD_ITEMS.contains(stack.getItem())) total += stack.getCount();
+        }
+        return total;
+    }
+
+    private int depositFood() {
+        int deposited = 0;
+        for (int i = 0; i < farmer.getInventory().getContainerSize(); i++) {
+            ItemStack stack = farmer.getInventory().getItem(i);
+            if (FOOD_ITEMS.contains(stack.getItem()) && !stack.isEmpty()) {
+                deposited += stack.getCount();
+                farmer.getInventory().setItem(i, ItemStack.EMPTY);
+            }
+        }
+        return deposited;
+    }
+
+    private BlockPos findNearestVillageAnchor() {
+        if (!(farmer.level() instanceof ServerLevel level)) return null;
+        VillageInstance village = VillageSavedData.get(level).findNear(farmer.blockPosition(), VillageManager.SEARCH_RADIUS);
+        return village != null ? village.getAnchor() : null;
     }
 }

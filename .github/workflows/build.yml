@@ -1,0 +1,44 @@
+name: Build Minecraft Mod
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: # Allows you to trigger the build manually from the GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Clone the repository code onto the runner
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    # 2. Set up Java (Java 21 is default for newer Minecraft versions like 1.20.5+)
+    # Change '21' to '17' if you are building for 1.18 - 1.20.4, or '8'/'16' for older versions.
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    # 3. Grant execute permission for the Gradle Wrapper
+    - name: Validate Gradle Wrapper
+      run: chmod +x gradlew
+
+    # 4. Set up Gradle cache to speed up subsequent builds
+    - name: Setup Gradle
+      uses: actions/setup-gradle@v4
+
+    # 5. Build the mod .jar file using Gradle
+    - name: Build Mod with Gradle
+      run: ./gradlew build
+
+    # 6. Upload the built file to GitHub Actions so you can download it
+    - name: Upload Mod Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Built-Mod-JARs
+        path: build/libs/*.jar

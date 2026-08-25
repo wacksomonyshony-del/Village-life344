@@ -1,6 +1,7 @@
 package com.villageevolution.mod.ai;
 
 import com.villageevolution.mod.util.VillagerTaskData;
+import com.villageevolution.mod.village.ConstructionProject;
 import com.villageevolution.mod.village.ResourceType;
 import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
@@ -12,110 +13,90 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 
 import java.util.EnumSet;
-import java.util.List;
+import java.util.UUID;
 
 /**
- * Profession-specific responsibility: farmer villagers periodically walk
- * their harvested crops back to the village's food stockpile instead of
- * just hoarding them in their trading inventory.
+ * "Villagers can deliver materials". Carries whatever GatherMaterialsGoal
+ * picked up back to the construction site and hands it over to the project.
+ * If the project still needs more of that resource, the villager loops back
+ * into gathering; once materials are complete they free up to become a
+ * builder instead.
  */
-public class FarmerContributeFoodGoal extends Goal {
+public class DeliverMaterialsGoal extends Goal {
 
-    private static final List<Item> FOOD_ITEMS = List.of(
-            Items.WHEAT, Items.CARROT, Items.POTATO, Items.BEETROOT, Items.BREAD);
-    private static final int CONTRIBUTE_THRESHOLD = 6;
+    private final Villager villager;
+    private BlockPos destination;
 
-    private final Villager farmer;
-    private BlockPos targetAnchor;
-    private boolean delivering;
-
-    public FarmerContributeFoodGoal(Villager farmer) {
-        this.farmer = farmer;
+    public DeliverMaterialsGoal(Villager villager) {
+        this.villager = villager;
         this.setFlags(EnumSet.of(Flag.MOVE));
     }
 
     @Override
     public boolean canUse() {
-        if (farmer.isBaby()) return false;
-        if (VillagerTaskData.getTask(farmer) != VillagerTaskData.Task.IDLE) return false;
-        if (farmer.getRandom().nextInt(100) != 0) return false;
-        return countCarriedFood() >= CONTRIBUTE_THRESHOLD && findNearestVillageAnchor() != null;
+        return VillagerTaskData.getTask(villager) == VillagerTaskData.Task.DELIVER
+                && VillagerTaskData.getCarryingAmount(villager) > 0;
     }
 
     @Override
     public boolean canContinueToUse() {
-        return delivering && targetAnchor != null;
+        return VillagerTaskData.getTask(villager) == VillagerTaskData.Task.DELIVER;
     }
 
     @Override
     public void start() {
-        delivering = true;
-        targetAnchor = findNearestVillageAnchor();
+        destination = VillagerTaskData.getVillageAnchor(villager);
     }
 
     @Override
     public void stop() {
-        delivering = false;
-        farmer.getNavigation().stop();
+        villager.getNavigation().stop();
     }
 
     @Override
     public void tick() {
-        if (targetAnchor == null || !(farmer.level() instanceof ServerLevel level)) {
-            delivering = false;
+        if (!(villager.level() instanceof ServerLevel level) || destination == null) {
+            VillagerTaskData.setIdle(villager);
             return;
         }
 
-        double distSqr = farmer.blockPosition().distSqr(targetAnchor);
-        if (distSqr > 3.0 * 3.0) {
-            farmer.getNavigation().moveTo(targetAnchor.getX() + 0.5, targetAnchor.getY(), targetAnchor.getZ() + 0.5, 0.5D);
+        UUID projectId = VillagerTaskData.getProjectId(villager);
+        VillageInstance village = VillageSavedData.get(level).findNear(destination, VillageManager.SEARCH_RADIUS);
+        ConstructionProject project = village != null && projectId != null
+                ? village.findProject(projectId).orElse(null) : null;
+
+        BlockPos target = project != null ? project.getOrigin() : destination;
+        double distSqr = villager.blockPosition().distSqr(target);
+        if (distSqr > 2.5 * 2.5) {
+            villager.getNavigation().moveTo(target.getX() + 0.5, target.getY(), target.getZ() + 0.5, 0.5D);
             return;
         }
 
-        farmer.getNavigation().stop();
-        int deposited = depositFood();
-        if (deposited > 0) {
-            VillageInstance village = VillageSavedData.get(level).findNear(targetAnchor, VillageManager.SEARCH_RADIUS);
-            if (village != null) {
-                village.addResource(ResourceType.FOOD, deposited);
-                village.getStatistics().addFoodProduced(deposited);
-            }
-            level.sendParticles(ParticleTypes.HAPPY_VILLAGER,
-                    farmer.getX(), farmer.getY() + 1, farmer.getZ(), 8, 0.4, 0.3, 0.4, 0.02);
-            level.playSound(null, farmer.blockPosition(), SoundEvents.VILLAGER_YES, SoundSource.NEUTRAL, 0.6F, 1.0F);
-        }
-        delivering = false;
-    }
+        villager.getNavigation().stop();
 
-    private int countCarriedFood() {
-        int total = 0;
-        for (int i = 0; i < farmer.getInventory().getContainerSize(); i++) {
-            ItemStack stack = farmer.getInventory().getItem(i);
-            if (FOOD_ITEMS.contains(stack.getItem())) total += stack.getCount();
-        }
-        return total;
-    }
-
-    private int depositFood() {
-        int deposited = 0;
-        for (int i = 0; i < farmer.getInventory().getContainerSize(); i++) {
-            ItemStack stack = farmer.getInventory().getItem(i);
-            if (FOOD_ITEMS.contains(stack.getItem()) && !stack.isEmpty()) {
-                deposited += stack.getCount();
-                farmer.getInventory().setItem(i, ItemStack.EMPTY);
+        String resourceName = VillagerTaskData.getCarryingResource(villager);
+        int amount = VillagerTaskData.getCarryingAmount(villager);
+        if (project != null && resourceName != null && !resourceName.isEmpty()) {
+            try {
+                ResourceType type = ResourceType.valueOf(resourceName);
+                project.deliver(type, amount);
+                village.getStatistics().addMaterialsGathered(amount);
+            } catch (IllegalArgumentException ignored) {
+                // stale/unknown resource tag - just drop the carry
             }
         }
-        return deposited;
-    }
+        VillagerTaskData.clearCarrying(villager);
 
-    private BlockPos findNearestVillageAnchor() {
-        if (!(farmer.level() instanceof ServerLevel level)) return null;
-        VillageInstance village = VillageSavedData.get(level).findNear(farmer.blockPosition(), VillageManager.SEARCH_RADIUS);
-        return village != null ? village.getAnchor() : null;
+        level.sendParticles(ParticleTypes.CRIT, villager.getX(), villager.getY() + 1, villager.getZ(), 6, 0.3, 0.3, 0.3, 0.05);
+        level.playSound(null, villager.blockPosition(), SoundEvents.WOOD_PLACE, SoundSource.NEUTRAL, 0.5F, 1.1F);
+
+        if (project != null && project.needsMaterials() && project.getAssignedGatherers().contains(villager.getUUID())) {
+            VillagerTaskData.assignGather(villager, destination, project.getId());
+        } else {
+            if (project != null) project.getAssignedGatherers().remove(villager.getUUID());
+            VillagerTaskData.setIdle(villager);
+        }
     }
 }

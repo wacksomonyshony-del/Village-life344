@@ -1,32 +1,40 @@
-package com.villageevolution.mod;
+package com.villageevolution.mod.util;
 
-import com.villageevolution.mod.event.VillageTickHandler;
-import com.villageevolution.mod.event.VillagerJoinHandler;
-import com.villageevolution.mod.registry.ModCreativeTab;
-import com.villageevolution.mod.registry.ModItems;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.eventbus.api.IEventBus;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.npc.Villager;
 
-@Mod(VillagerEvolutionMod.MOD_ID)
-public class VillagerEvolutionMod {
+/**
+ * Tracks whether a villager counts as "critically injured" (below 40% max
+ * health). This doesn't add a new game-mechanical health system - it's a
+ * classification layer on top of vanilla health used to (a) prioritize
+ * which patient a cleric goes to first, and (b) show a periodic visual cue
+ * so players can spot who needs help.
+ */
+public final class VillagerInjuryHelper {
 
-    public static final String MOD_ID = "villageevolution";
-    public static final Logger LOGGER = LogManager.getLogger();
+    private static final float INJURED_THRESHOLD = 0.4F;
 
-    public VillagerEvolutionMod() {
-        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
+    private VillagerInjuryHelper() {}
 
-        ModItems.ITEMS.register(modEventBus);
-        ModCreativeTab.TABS.register(modEventBus);
+    public static boolean isInjured(Villager villager) {
+        return villager.getHealth() < villager.getMaxHealth() * INJURED_THRESHOLD;
+    }
 
-        MinecraftForge.EVENT_BUS.register(new VillageTickHandler());
-        MinecraftForge.EVENT_BUS.register(new VillagerJoinHandler());
+    public static boolean isWounded(Villager villager) {
+        return villager.getHealth() < villager.getMaxHealth();
+    }
 
-        LOGGER.info("Village Evolution initialized: villages track civilization state, " +
-                "expand automatically, and villagers gather/deliver/build, repair golems, and heal each other.");
+    /** Severity score used to pick which patient a cleric treats first: lower health % = higher priority. */
+    public static double severity(Villager villager) {
+        return 1.0 - (villager.getHealth() / (double) villager.getMaxHealth());
+    }
+
+    public static void showInjuryParticles(Villager villager) {
+        if (villager.level() instanceof ServerLevel serverLevel && isInjured(villager)) {
+            serverLevel.sendParticles(ParticleTypes.SMOKE,
+                    villager.getX(), villager.getY() + villager.getBbHeight() + 0.3, villager.getZ(),
+                    1, 0.1, 0.1, 0.1, 0.0);
+        }
     }
 }

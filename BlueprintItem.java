@@ -1,161 +1,132 @@
 package com.villageevolution.mod.ai;
 
-import com.villageevolution.mod.util.VillagerTaskData;
-import com.villageevolution.mod.village.ConstructionProject;
-import com.villageevolution.mod.village.ResourceType;
 import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
-import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.entity.npc.VillagerProfession;
 
+import java.util.Comparator;
 import java.util.EnumSet;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.List;
 
 /**
- * "Villagers can gather construction materials". Assigned by VillageManager
- * when a construction project needs more resources. Finds a nearby matching
- * block (logs for wood, stone-family blocks for stone, ore for iron), mines
- * it, and hands off to DeliverMaterialsGoal to bring it back.
+ * "Villagers repair damaged iron golems" / "Blacksmiths specialize in golem
+ * repairs". Any villager can patch up a wounded golem, but blacksmith-type
+ * villagers (armorer, weaponsmith, toolsmith - the ones who actually work
+ * iron) do it faster, in bigger chunks, and from further away, reflecting
+ * their trade specialty.
  */
-public class GatherMaterialsGoal extends Goal {
+public class RepairIronGolemGoal extends Goal {
 
-    private static final int SCAN_RADIUS = 12;
-    private static final int GIVE_UP_TICKS = 400;
-
-    /** Small local pairing so we don't depend on vanilla util.Tuple's exact accessor names. */
-    private record ProjectLookup(VillageInstance village, ConstructionProject project) {}
+    private static final double BASE_SEARCH_RADIUS = 16.0;
+    private static final double SPECIALIST_SEARCH_RADIUS = 24.0;
+    private static final double HEAL_RANGE = 2.5;
+    private static final int BASE_HEAL_INTERVAL = 20;
+    private static final int SPECIALIST_HEAL_INTERVAL = 12;
+    private static final float BASE_HEAL_AMOUNT = 4.0F;
+    private static final float SPECIALIST_HEAL_AMOUNT = 8.0F;
+    private static final int MAX_PURSUIT_TICKS = 600;
 
     private final Villager villager;
-    private BlockPos targetBlock;
-    private ResourceType targetResource;
-    private int ticksActive;
+    private final boolean specialist;
+    private IronGolem target;
+    private int healCooldown;
+    private int pursuitTicks;
 
-    public GatherMaterialsGoal(Villager villager) {
+    public RepairIronGolemGoal(Villager villager) {
         this.villager = villager;
-        this.setFlags(EnumSet.of(Flag.MOVE));
+        this.specialist = isBlacksmithProfession(villager);
+        this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK));
+    }
+
+    public static boolean isBlacksmithProfession(Villager villager) {
+        VillagerProfession profession = villager.getVillagerData().getProfession();
+        return profession == VillagerProfession.ARMORER
+                || profession == VillagerProfession.WEAPONSMITH
+                || profession == VillagerProfession.TOOLSMITH;
     }
 
     @Override
     public boolean canUse() {
-        if (villager.isBaby()) return false;
-        if (VillagerTaskData.getTask(villager) != VillagerTaskData.Task.GATHER) return false;
-        return findProject().isPresent();
+        if (villager.isBaby() || villager.isSleeping()) return false;
+        if (villager.getRandom().nextInt(specialist ? 50 : 80) != 0) return false;
+
+        double radius = specialist ? SPECIALIST_SEARCH_RADIUS : BASE_SEARCH_RADIUS;
+        List<IronGolem> nearby = villager.level().getEntitiesOfClass(
+                IronGolem.class,
+                villager.getBoundingBox().inflate(radius),
+                golem -> golem.isAlive() && golem.getHealth() < golem.getMaxHealth()
+        );
+        if (nearby.isEmpty()) return false;
+
+        nearby.sort(Comparator.comparingDouble(g -> g.distanceToSqr(villager)));
+        this.target = nearby.get(0);
+        return true;
     }
 
     @Override
     public boolean canContinueToUse() {
-        return VillagerTaskData.getTask(villager) == VillagerTaskData.Task.GATHER && ticksActive < GIVE_UP_TICKS;
+        return target != null && target.isAlive()
+                && target.getHealth() < target.getMaxHealth()
+                && pursuitTicks < MAX_PURSUIT_TICKS;
     }
 
     @Override
     public void start() {
-        ticksActive = 0;
-        targetBlock = null;
-        targetResource = pickNeededResource().orElse(null);
+        pursuitTicks = 0;
+        healCooldown = 0;
     }
 
     @Override
     public void stop() {
+        target = null;
         villager.getNavigation().stop();
-        targetBlock = null;
+    }
+
+    @Override
+    public boolean isInterruptable() {
+        return true;
     }
 
     @Override
     public void tick() {
-        ticksActive++;
-        if (!(villager.level() instanceof ServerLevel level)) return;
+        if (target == null) return;
+        pursuitTicks++;
+        villager.getLookControl().setLookAt(target, 30.0F, 30.0F);
 
-        if (targetResource == null) {
-            targetResource = pickNeededResource().orElse(null);
-            if (targetResource == null) {
-                giveUp();
-                return;
-            }
-        }
-
-        if (targetBlock == null || !matches(level.getBlockState(targetBlock), targetResource)) {
-            targetBlock = findNearestMatch(level, targetResource).orElse(null);
-            if (targetBlock == null) {
-                if (ticksActive > 100) giveUp(); // nothing to gather nearby; free the slot
-                return;
-            }
-        }
-
-        double distSqr = villager.blockPosition().distSqr(targetBlock);
-        if (distSqr > 2.5 * 2.5) {
-            villager.getNavigation().moveTo(targetBlock.getX() + 0.5, targetBlock.getY(), targetBlock.getZ() + 0.5, 0.5D);
+        if (villager.distanceToSqr(target) > HEAL_RANGE * HEAL_RANGE) {
+            villager.getNavigation().moveTo(target, 0.5D);
             return;
         }
 
         villager.getNavigation().stop();
-        level.destroyBlock(targetBlock, false);
-        level.playSound(null, targetBlock, SoundEvents.STONE_BREAK, SoundSource.NEUTRAL, 0.6F, 1.0F);
+        if (--healCooldown <= 0) {
+            healCooldown = specialist ? SPECIALIST_HEAL_INTERVAL : BASE_HEAL_INTERVAL;
+            float amount = specialist ? SPECIALIST_HEAL_AMOUNT : BASE_HEAL_AMOUNT;
+            boolean wasDamaged = target.getHealth() < target.getMaxHealth();
+            target.heal(amount);
 
-        VillagerTaskData.setCarrying(villager, targetResource.name(), 1);
-        VillagerTaskData.setDelivering(villager);
-        targetBlock = null;
-    }
+            if (villager.level() instanceof ServerLevel serverLevel) {
+                serverLevel.sendParticles(specialist ? ParticleTypes.ELECTRIC_SPARK : ParticleTypes.HEART,
+                        target.getX(), target.getY() + target.getBbHeight() + 0.2, target.getZ(),
+                        specialist ? 6 : 3, 0.3, 0.2, 0.3, 0.0);
 
-    private void giveUp() {
-        VillagerTaskData.setIdle(villager);
-        findProject().ifPresent(lookup -> lookup.project().getAssignedGatherers().remove(villager.getUUID()));
-    }
-
-    private Optional<ResourceType> pickNeededResource() {
-        return findProject().map(lookup -> {
-            ConstructionProject project = lookup.project();
-            for (ResourceType type : new ResourceType[]{ResourceType.WOOD, ResourceType.STONE, ResourceType.IRON}) {
-                if (project.getRemaining(type) > 0) return type;
-            }
-            return null;
-        });
-    }
-
-    private Optional<ProjectLookup> findProject() {
-        if (!(villager.level() instanceof ServerLevel level)) return Optional.empty();
-        BlockPos anchor = VillagerTaskData.getVillageAnchor(villager);
-        UUID projectId = VillagerTaskData.getProjectId(villager);
-        if (anchor == null || projectId == null) return Optional.empty();
-
-        VillageInstance village = VillageSavedData.get(level).findNear(anchor, VillageManager.SEARCH_RADIUS);
-        if (village == null) return Optional.empty();
-        return village.findProject(projectId).map(p -> new ProjectLookup(village, p));
-    }
-
-    private static boolean matches(BlockState state, ResourceType type) {
-        return switch (type) {
-            case WOOD -> state.is(BlockTags.LOGS);
-            case STONE -> state.is(Blocks.STONE) || state.is(Blocks.COBBLESTONE) || state.is(Blocks.ANDESITE)
-                    || state.is(Blocks.DIORITE) || state.is(Blocks.GRANITE) || state.is(Blocks.DEEPSLATE)
-                    || state.is(Blocks.COBBLED_DEEPSLATE);
-            case IRON -> state.is(Blocks.IRON_ORE) || state.is(Blocks.DEEPSLATE_IRON_ORE);
-            case FOOD -> false;
-        };
-    }
-
-    private Optional<BlockPos> findNearestMatch(ServerLevel level, ResourceType type) {
-        BlockPos center = villager.blockPosition();
-        BlockPos bestPos = null;
-        double bestDist = Double.MAX_VALUE;
-        for (BlockPos pos : BlockPos.betweenClosed(
-                center.offset(-SCAN_RADIUS, -4, -SCAN_RADIUS), center.offset(SCAN_RADIUS, 4, SCAN_RADIUS))) {
-            if (matches(level.getBlockState(pos), type)) {
-                double d = pos.distSqr(center);
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestPos = pos.immutable();
+                if (wasDamaged && target.getHealth() >= target.getMaxHealth()) {
+                    VillageInstance village = VillageSavedData.get(serverLevel)
+                            .findNear(villager.blockPosition(), VillageManager.SEARCH_RADIUS);
+                    if (village != null) village.getStatistics().incrementGolemsRepaired();
                 }
             }
+            villager.level().playSound(null, villager.blockPosition(),
+                    specialist ? SoundEvents.ANVIL_USE : SoundEvents.VILLAGER_WORK_MASON,
+                    SoundSource.NEUTRAL, 0.4F, specialist ? 1.0F : 1.2F);
         }
-        return Optional.ofNullable(bestPos);
     }
 }

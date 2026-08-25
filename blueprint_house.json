@@ -1,245 +1,278 @@
 package com.villageevolution.mod.village;
 
-import com.villageevolution.mod.util.VillagerTaskData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.animal.IronGolem;
-import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.phys.AABB;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
-import java.util.Random;
-import java.util.UUID;
 
 /**
- * The village "brain": population/housing tracking, resource bookkeeping,
- * automatic expansion (deciding what to build next), and finalizing
- * construction projects once they're fully gathered + built. Villager AI
- * goals (see the ai package) do the legwork; this class makes the
- * town-planning decisions and applies their results to the world.
+ * Procedurally generates the block layout for each building type/level
+ * rather than loading external NBT structure files, so the whole mod stays
+ * self-contained in source. Layouts are simple but distinct per building
+ * type, and scale up (bigger footprint, better materials) with level -
+ * this is what satisfies "larger upgraded versions as the settlement
+ * develops".
+ *
+ * Coordinates are local to the building: x = sideways ("width"), y = up,
+ * z = forward (the direction the building faces, e.g. its door/front).
+ * transform() rotates local coordinates into world space based on the
+ * building's stored facing direction.
  */
-public class VillageManager {
+public final class BlueprintLibrary {
 
-    public static final int SEARCH_RADIUS = 48;
-    public static final int GROWTH_INTERVAL_TICKS = 6000;   // 5 minutes: stage growth + food upkeep
-    public static final int PROJECT_INTERVAL_TICKS = 100;   // 5 seconds: worker assignment + expansion checks
+    private BlueprintLibrary() {}
 
-    private static final Random RANDOM = new Random();
+    public static List<BlockPlacement> generate(BuildingType type, int level, BlockPos origin, Direction facing) {
+        List<BlockPlacement> out = new ArrayList<>();
+        switch (type) {
+            case HOUSE -> house(out, origin, facing, level);
+            case TOWN_HALL -> townHall(out, origin, facing, level);
+            case FARM -> farm(out, origin, facing, level);
+            case STORAGE -> storage(out, origin, facing, level);
+            case BLACKSMITH -> blacksmith(out, origin, facing, level);
+            case MARKET -> market(out, origin, facing, level);
+            case CLINIC -> clinicOrHospital(out, origin, facing, level, false);
+            case HOSPITAL -> clinicOrHospital(out, origin, facing, level, true);
+            case WATCHTOWER -> watchtower(out, origin, facing, level);
+            case WALL_GATE -> wallGate(out, origin, facing, level);
+        }
+        return out;
+    }
 
-    // =========================================================================================
-    // Growth / stage progression
-    // =========================================================================================
+    // ---- coordinate helpers -------------------------------------------------
 
-    public static void tickGrowth(ServerLevel level, VillageInstance village, long gameTime) {
-        if (gameTime - village.getLastGrowthTick() < GROWTH_INTERVAL_TICKS) return;
-        village.setLastGrowthTick(gameTime);
+    private static BlockPos transform(BlockPos origin, Direction facing, int lx, int ly, int lz) {
+        Direction right = facing.getClockWise();
+        int worldX = origin.getX() + facing.getStepX() * lz + right.getStepX() * lx;
+        int worldY = origin.getY() + ly;
+        int worldZ = origin.getZ() + facing.getStepZ() * lz + right.getStepZ() * lx;
+        return new BlockPos(worldX, worldY, worldZ);
+    }
 
-        BlockPos anchor = village.getAnchor();
-        AABB area = new AABB(anchor).inflate(SEARCH_RADIUS);
-        List<Villager> villagers = level.getEntitiesOfClass(Villager.class, area);
-        List<IronGolem> golems = level.getEntitiesOfClass(IronGolem.class, area);
+    private static void put(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                             int lx, int ly, int lz, BlockState state) {
+        out.add(new BlockPlacement(transform(origin, facing, lx, ly, lz), state));
+    }
 
-        village.setPopulation(villagers.size());
-        if (villagers.isEmpty()) return; // abandoned; don't grow or shrink further
+    private static void box(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                             int x0, int y0, int z0, int x1, int y1, int z1, BlockState state) {
+        for (int x = x0; x < x1; x++)
+            for (int y = y0; y < y1; y++)
+                for (int z = z0; z < z1; z++)
+                    put(out, origin, facing, x, y, z, state);
+    }
 
-        // Food upkeep: population consumes stockpiled food. A shortage slows growth.
-        int foodNeeded = villagers.size();
-        boolean fed = village.consumeResource(ResourceType.FOOD, foodNeeded);
-
-        int growth = villagers.size() * 8 + golems.size() * 3;
-        if (!fed) growth /= 2;
-        village.addGrowth(growth);
-
-        VillageStage current = village.getStage();
-        if (!current.isMax()) {
-            VillageStage nextStage = current.next();
-            boolean hasEnoughBuildings = village.getBuildings().size() >= nextStage.getLevel() * 2;
-            if (village.getGrowthPoints() >= nextStage.getGrowthRequired() && hasEnoughBuildings) {
-                advanceStage(level, village, nextStage);
+    private static void hollowBox(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                   int x0, int y0, int z0, int x1, int y1, int z1, BlockState wall, BlockState floor) {
+        for (int x = x0; x < x1; x++)
+            for (int z = z0; z < z1; z++)
+                put(out, origin, facing, x, y0, z, floor);
+        for (int x = x0; x < x1; x++)
+            for (int y = y0; y < y1; y++) {
+                put(out, origin, facing, x, y, z0, wall);
+                put(out, origin, facing, x, y, z1 - 1, wall);
             }
-        }
-    }
-
-    private static void advanceStage(ServerLevel level, VillageInstance village, VillageStage newStage) {
-        village.setStage(newStage);
-        BlockPos anchor = village.getAnchor();
-
-        level.sendParticles(ParticleTypes.HAPPY_VILLAGER,
-                anchor.getX() + 0.5, anchor.getY() + 1.5, anchor.getZ() + 0.5,
-                40, 3.0, 2.0, 3.0, 0.02);
-        level.playSound(null, anchor, SoundEvents.VILLAGER_CELEBRATE, SoundSource.NEUTRAL, 1.0F, 1.0F);
-
-        Component message = Component.literal(
-                "The settlement near " + anchor.toShortString() + " has grown into a " + newStage.getDisplayName() + "!");
-        double announceRadiusSqr = Math.pow(SEARCH_RADIUS * 4, 2);
-        for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
-            if (player.level() == level && player.blockPosition().distSqr(anchor) < announceRadiusSqr) {
-                player.displayClientMessage(message, false);
+        for (int z = z0; z < z1; z++)
+            for (int y = y0; y < y1; y++) {
+                put(out, origin, facing, x0, y, z, wall);
+                put(out, origin, facing, x1 - 1, y, z, wall);
             }
-        }
+    }
 
-        int targetBonusGolems = newStage.getLevel();
-        while (village.getBonusGolemsSpawned() < targetBonusGolems) {
-            if (!spawnBonusGolem(level, village)) break;
+    // ---- building generators --------------------------------------------------
+
+    private static void house(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int size = 4 + level * 2; // 6, 8, 10
+        int height = 3 + level;
+        BlockState wall = level >= 3 ? Blocks.COBBLESTONE.defaultBlockState() : Blocks.OAK_PLANKS.defaultBlockState();
+        BlockState floor = Blocks.OAK_PLANKS.defaultBlockState();
+        BlockState roof = level >= 2 ? Blocks.SPRUCE_SLAB.defaultBlockState() : Blocks.OAK_SLAB.defaultBlockState();
+
+        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
+        box(out, origin, facing, 1, height, 1, size - 1, height + 1, size - 1, roof);
+
+        // Door opening + windows.
+        int mid = size / 2;
+        put(out, origin, facing, mid, 0, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, mid, 1, 0, Blocks.AIR.defaultBlockState());
+        if (size >= 6) {
+            put(out, origin, facing, 1, 1, 0, Blocks.GLASS_PANE.defaultBlockState());
+            put(out, origin, facing, size - 2, 1, 0, Blocks.GLASS_PANE.defaultBlockState());
+        }
+        // Bonus beds for higher tiers to reflect more residents.
+        int beds = level;
+        for (int i = 0; i < beds; i++) {
+            put(out, origin, facing, 1, 1, 1 + i * 2, Blocks.RED_BED.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                    .setValue(BlockStateProperties.BED_PART, BedPart.FOOT));
         }
     }
 
-    private static boolean spawnBonusGolem(ServerLevel level, VillageInstance village) {
-        BlockPos anchor = village.getAnchor();
-        for (int attempt = 0; attempt < 10; attempt++) {
-            BlockPos candidate = anchor.offset(RANDOM.nextInt(21) - 10, 0, RANDOM.nextInt(21) - 10);
-            BlockPos ground = findSurface(level, candidate);
-            if (ground == null) continue;
+    private static void townHall(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int size = 9 + level * 3;
+        int height = 5 + level * 2;
+        BlockState wall = Blocks.STONE_BRICKS.defaultBlockState();
+        BlockState floor = Blocks.POLISHED_ANDESITE.defaultBlockState();
+        BlockState roof = Blocks.DARK_OAK_SLAB.defaultBlockState();
 
-            IronGolem golem = new IronGolem(EntityType.IRON_GOLEM, level);
-            golem.moveTo(ground.getX() + 0.5, ground.getY() + 1, ground.getZ() + 0.5, 0.0F, 0.0F);
-            golem.setPlayerCreated(false);
-            level.addFreshEntity(golem);
-            village.incrementBonusGolems();
-            return true;
-        }
-        return false;
+        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
+        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
+
+        int mid = size / 2;
+        for (int y = 0; y < 3; y++) put(out, origin, facing, mid, y, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, mid, 2, 1, Blocks.BELL.defaultBlockState());
+        put(out, origin, facing, mid - 1, height, mid, Blocks.OAK_FENCE.defaultBlockState());
+        put(out, origin, facing, mid - 1, height + 1, mid, Blocks.TORCH.defaultBlockState());
     }
 
-    // =========================================================================================
-    // Automatic expansion + worker assignment
-    // =========================================================================================
+    private static void farm(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int size = 3 + level * 2; // 5, 7, 9
+        BlockState farmland = Blocks.FARMLAND.defaultBlockState();
+        BlockState water = Blocks.WATER.defaultBlockState();
+        BlockState wheat = Blocks.WHEAT.defaultBlockState();
+        BlockState fence = Blocks.OAK_FENCE.defaultBlockState();
 
-    public static void tickProjects(ServerLevel level, VillageInstance village, long gameTime) {
-        if (gameTime - village.getLastProjectTick() < PROJECT_INTERVAL_TICKS) return;
-        village.setLastProjectTick(gameTime);
-
-        if (village.getProjects().isEmpty()) {
-            considerNewProject(level, village);
-        }
-        assignWorkers(level, village);
-    }
-
-    /** Decides what the village needs most and queues a project for it, if resources/space allow. */
-    private static void considerNewProject(ServerLevel level, VillageInstance village) {
-        BuildingType next = decideNextBuilding(village);
-        if (next == null) return;
-
-        boolean isUpgrade = village.hasBuildingOfType(next)
-                && village.getBuildingsOfType(next).stream().anyMatch(VillageBuilding::canUpgrade)
-                && (next != BuildingType.HOUSE); // prefer building new houses over upgrading old ones
-
-        BlockPos anchor = village.getAnchor();
-        if (isUpgrade) {
-            VillageBuilding existing = village.getBuildingsOfType(next).stream()
-                    .filter(VillageBuilding::canUpgrade).findFirst().orElse(null);
-            if (existing == null) return;
-            village.addProject(new ConstructionProject(next, existing.getLevel() + 1, existing.getOrigin(), existing.getFacing(), true));
-        } else {
-            BlockPos site = findBuildSite(level, anchor);
-            if (site == null) return;
-            Direction facing = Direction.Plane.HORIZONTAL.getRandomDirection(RANDOM);
-            village.addProject(new ConstructionProject(next, 1, site, facing, false));
-        }
-    }
-
-    /** Priority order reflecting a believable settlement growth pattern. */
-    private static BuildingType decideNextBuilding(VillageInstance village) {
-        int population = village.getPopulation();
-        VillageStage stage = village.getStage();
-
-        if (!village.hasBuildingOfType(BuildingType.TOWN_HALL)) return BuildingType.TOWN_HALL;
-        if (village.isOverpopulated() || village.getBuildingsOfType(BuildingType.HOUSE).isEmpty()) {
-            return BuildingType.HOUSE;
-        }
-        if (village.getBuildingsOfType(BuildingType.FARM).size() < 1 + population / 8) {
-            return BuildingType.FARM;
-        }
-        for (BuildingType type : new BuildingType[]{
-                BuildingType.STORAGE, BuildingType.BLACKSMITH, BuildingType.MARKET,
-                BuildingType.CLINIC, BuildingType.WATCHTOWER, BuildingType.WALL_GATE, BuildingType.HOSPITAL
-        }) {
-            if (!type.isUnlocked(population, stage)) continue;
-            if (!village.hasBuildingOfType(type)) return type;
-        }
-        // Everything exists at least once - build more houses if there's room to grow, else upgrade town hall.
-        if (village.getHousingCapacity() < population + 4) return BuildingType.HOUSE;
-        return BuildingType.TOWN_HALL;
-    }
-
-    private static BlockPos findBuildSite(ServerLevel level, BlockPos anchor) {
-        for (int attempt = 0; attempt < 20; attempt++) {
-            BlockPos candidate = anchor.offset(RANDOM.nextInt(61) - 30, 0, RANDOM.nextInt(61) - 30);
-            BlockPos ground = findSurface(level, candidate);
-            if (ground != null) return ground;
-        }
-        return null;
-    }
-
-    private static BlockPos findSurface(ServerLevel level, BlockPos columnPos) {
-        BlockPos top = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, columnPos);
-        if (top.getY() <= level.getMinBuildHeight() + 1) return null;
-        return top;
-    }
-
-    /** Assigns idle nearby villagers to gather materials for, or build, active projects. */
-    private static void assignWorkers(ServerLevel level, VillageInstance village) {
-        if (village.getProjects().isEmpty()) return;
-
-        List<Villager> nearby = level.getEntitiesOfClass(Villager.class,
-                new AABB(village.getAnchor()).inflate(SEARCH_RADIUS));
-
-        for (ConstructionProject project : village.getProjects()) {
-            for (Villager villager : nearby) {
-                if (VillagerTaskData.getTask(villager) != VillagerTaskData.Task.IDLE) continue;
-
-                if (project.needsGatherer()) {
-                    VillagerTaskData.assignGather(villager, village.getAnchor(), project.getId());
-                    project.getAssignedGatherers().add(villager.getUUID());
-                } else if (project.needsBuilder()) {
-                    VillagerTaskData.assignBuild(villager, village.getAnchor(), project.getId());
-                    project.getAssignedBuilders().add(villager.getUUID());
+        for (int x = 0; x < size; x++) {
+            for (int z = 0; z < size; z++) {
+                boolean edge = x == 0 || z == 0 || x == size - 1 || z == size - 1;
+                boolean waterChannel = (x == size / 2) || (z == size / 2);
+                if (edge) {
+                    put(out, origin, facing, x, 0, z, fence);
+                } else if (waterChannel) {
+                    put(out, origin, facing, x, -1, z, water);
+                } else {
+                    put(out, origin, facing, x, -1, z, farmland);
+                    put(out, origin, facing, x, 0, z, wheat);
                 }
             }
         }
     }
 
-    // =========================================================================================
-    // Called by AI goals
-    // =========================================================================================
+    private static void storage(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int width = 5 + level * 2;
+        int depth = 5 + level;
+        int height = 3 + level;
+        BlockState wall = Blocks.SPRUCE_PLANKS.defaultBlockState();
+        BlockState floor = Blocks.SPRUCE_PLANKS.defaultBlockState();
+        BlockState roof = Blocks.SPRUCE_SLAB.defaultBlockState();
 
-    public static Optional<ConstructionProject> findProject(VillageInstance village, UUID projectId) {
-        return village.findProject(projectId);
+        hollowBox(out, origin, facing, 0, 0, 0, width, height, depth, wall, floor);
+        box(out, origin, facing, 0, height, 0, width, height + 1, depth, roof);
+        put(out, origin, facing, width / 2, 0, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, width / 2, 1, 0, Blocks.AIR.defaultBlockState());
+
+        int chests = 2 + level * 2;
+        for (int i = 0; i < chests && i < width - 2; i++) {
+            put(out, origin, facing, 1 + i, 1, depth - 2, Blocks.CHEST.defaultBlockState());
+        }
+        put(out, origin, facing, width - 2, 1, 1, Blocks.BARREL.defaultBlockState());
     }
 
-    /** Finalizes a project once fully gathered and built: places the blueprint and registers the building. */
-    public static void completeProject(ServerLevel level, VillageInstance village, ConstructionProject project) {
-        List<BlockPlacement> placements = BlueprintLibrary.generate(
-                project.getType(), project.getTargetLevel(), project.getOrigin(), project.getFacing());
-        for (BlockPlacement placement : placements) {
-            level.setBlockAndUpdate(placement.pos(), placement.state());
-        }
+    private static void blacksmith(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int size = 6 + level * 2;
+        int height = 4 + level;
+        BlockState wall = Blocks.COBBLESTONE.defaultBlockState();
+        BlockState floor = Blocks.STONE_BRICKS.defaultBlockState();
+        BlockState roof = Blocks.STONE_BRICK_SLAB.defaultBlockState();
 
-        if (project.isUpgrade()) {
-            village.getBuildingsOfType(project.getType()).stream()
-                    .filter(b -> b.getOrigin().equals(project.getOrigin()))
-                    .findFirst()
-                    .ifPresent(b -> b.setLevel(project.getTargetLevel()));
-            village.getStatistics().incrementBuildingsUpgraded();
-        } else {
-            village.addBuilding(new VillageBuilding(project.getType(), project.getTargetLevel(), project.getOrigin(), project.getFacing()));
-            village.getStatistics().incrementBuildingsConstructed();
-        }
-        village.getStatistics().incrementProjectsCompleted();
-        village.removeProject(project);
+        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
+        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
+        put(out, origin, facing, size / 2, 0, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, size / 2, 1, 0, Blocks.AIR.defaultBlockState());
 
-        level.sendParticles(ParticleTypes.CLOUD,
-                project.getOrigin().getX() + 0.5, project.getOrigin().getY() + 2.0, project.getOrigin().getZ() + 0.5,
-                30, 2.0, 1.5, 2.0, 0.02);
-        level.playSound(null, project.getOrigin(), SoundEvents.STONE_PLACE, SoundSource.NEUTRAL, 1.0F, 0.8F);
+        put(out, origin, facing, 1, 1, 1, Blocks.FURNACE.defaultBlockState());
+        put(out, origin, facing, 2, 1, 1, Blocks.ANVIL.defaultBlockState());
+        if (level >= 2) {
+            put(out, origin, facing, 3, 1, 1, Blocks.BLAST_FURNACE.defaultBlockState());
+            put(out, origin, facing, 1, 1, 2, Blocks.IRON_BLOCK.defaultBlockState());
+        }
+    }
+
+    private static void market(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int width = 7 + level * 3;
+        int depth = 5 + level * 2;
+        BlockState floor = Blocks.POLISHED_ANDESITE.defaultBlockState();
+        BlockState post = Blocks.OAK_FENCE.defaultBlockState();
+        BlockState roof = Blocks.OAK_SLAB.defaultBlockState();
+
+        box(out, origin, facing, 0, -1, 0, width, 0, depth, floor);
+        for (int x = 0; x < width; x += width - 1) {
+            for (int z = 0; z < depth; z += depth - 1) {
+                box(out, origin, facing, x, 0, z, x + 1, 3, z + 1, post);
+            }
+        }
+        box(out, origin, facing, 0, 3, 0, width, 4, depth, roof);
+
+        int stalls = 2 + level;
+        for (int i = 0; i < stalls; i++) {
+            int x = 1 + (i * 2) % (width - 2);
+            put(out, origin, facing, x, 0, 1, Blocks.HAY_BLOCK.defaultBlockState());
+            put(out, origin, facing, x, 1, 1, Blocks.CANDLE.defaultBlockState());
+        }
+        put(out, origin, facing, width / 2, 0, depth / 2, Blocks.LECTERN.defaultBlockState());
+    }
+
+    private static void clinicOrHospital(List<BlockPlacement> out, BlockPos origin, Direction facing, int level, boolean hospital) {
+        int size = hospital ? 12 : (6 + level * 2);
+        int height = hospital ? 6 : (4 + level);
+        BlockState wall = Blocks.QUARTZ_BLOCK.defaultBlockState();
+        BlockState floor = Blocks.SMOOTH_QUARTZ.defaultBlockState();
+        BlockState roof = Blocks.QUARTZ_SLAB.defaultBlockState();
+
+        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
+        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
+        put(out, origin, facing, size / 2, 0, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, size / 2, 1, 0, Blocks.AIR.defaultBlockState());
+
+        int beds = hospital ? 6 : 2;
+        for (int i = 0; i < beds; i++) {
+            int x = 1 + (i * 2) % (size - 2);
+            int z = 1 + ((i * 2) / (size - 2)) * 2;
+            put(out, origin, facing, x, 1, Math.min(z, size - 2), Blocks.WHITE_BED.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                    .setValue(BlockStateProperties.BED_PART, BedPart.FOOT));
+        }
+        put(out, origin, facing, size / 2, 1, size - 2, Blocks.BREWING_STAND.defaultBlockState());
+    }
+
+    private static void watchtower(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int width = 5;
+        int height = 6 + level * 4;
+        BlockState wall = Blocks.COBBLESTONE_WALL.defaultBlockState();
+        BlockState solidWall = Blocks.COBBLESTONE.defaultBlockState();
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                for (int z = 0; z < width; z++) {
+                    boolean edge = x == 0 || z == 0 || x == width - 1 || z == width - 1;
+                    if (edge) put(out, origin, facing, x, y, z, y == height - 1 ? wall : solidWall);
+                }
+            }
+        }
+        put(out, origin, facing, width / 2, 0, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, width / 2, 1, 0, Blocks.AIR.defaultBlockState());
+        put(out, origin, facing, 1, height - 1, 1, Blocks.TORCH.defaultBlockState());
+        put(out, origin, facing, width - 2, height - 1, width - 2, Blocks.TORCH.defaultBlockState());
+    }
+
+    private static void wallGate(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
+        int length = 9 + level * 6;
+        int height = 3 + level;
+        BlockState wall = Blocks.COBBLESTONE_WALL.defaultBlockState();
+
+        for (int x = 0; x < length; x++) {
+            int mid = length / 2;
+            if (x == mid || x == mid + 1) continue; // gap for the gate
+            for (int y = 0; y < height; y++) {
+                put(out, origin, facing, x, y, 0, wall);
+            }
+        }
+        put(out, origin, facing, length / 2, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState());
+        put(out, origin, facing, length / 2 + 1, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState());
     }
 }

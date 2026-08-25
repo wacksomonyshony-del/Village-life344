@@ -1,50 +1,32 @@
-package com.villageevolution.mod.event;
+package com.villageevolution.mod;
 
-import com.villageevolution.mod.util.VillagerInjuryHelper;
-import com.villageevolution.mod.village.VillageInstance;
-import com.villageevolution.mod.village.VillageManager;
-import com.villageevolution.mod.village.VillageSavedData;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.phys.AABB;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.server.ServerLifecycleHooks;
+import com.villageevolution.mod.event.VillageTickHandler;
+import com.villageevolution.mod.event.VillagerJoinHandler;
+import com.villageevolution.mod.registry.ModCreativeTab;
+import com.villageevolution.mod.registry.ModItems;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
-public class VillageTickHandler {
+@Mod(VillagerEvolutionMod.MOD_ID)
+public class VillagerEvolutionMod {
 
-    /** Base cadence; growth/project checks are further gated by their own intervals inside VillageManager. */
-    private static final int CHECK_INTERVAL = 100;
-    private static final int INJURY_PARTICLE_INTERVAL = 40;
+    public static final String MOD_ID = "villageevolution";
+    public static final Logger LOGGER = LogManager.getLogger();
 
-    @SubscribeEvent
-    public void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+    public VillagerEvolutionMod() {
+        IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
 
-        // ServerLifecycleHooks is the long-stable way to get the running server from any
-        // event context, avoiding any uncertainty about which TickEvent fields/getters
-        // exist on a given Forge build.
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server == null) return;
+        ModItems.ITEMS.register(modEventBus);
+        ModCreativeTab.TABS.register(modEventBus);
 
-        int tick = server.getTickCount();
-        if (tick % CHECK_INTERVAL != 0) return;
+        MinecraftForge.EVENT_BUS.register(new VillageTickHandler());
+        MinecraftForge.EVENT_BUS.register(new VillagerJoinHandler());
 
-        for (ServerLevel level : server.getAllLevels()) {
-            VillageSavedData data = VillageSavedData.get(level);
-            long gameTime = level.getGameTime();
-            for (VillageInstance village : data.getVillages()) {
-                VillageManager.tickGrowth(level, village, gameTime);
-                VillageManager.tickProjects(level, village, gameTime);
-
-                if (tick % INJURY_PARTICLE_INTERVAL == 0) {
-                    AABB area = new AABB(village.getAnchor()).inflate(VillageManager.SEARCH_RADIUS);
-                    for (Villager villager : level.getEntitiesOfClass(Villager.class, area)) {
-                        VillagerInjuryHelper.showInjuryParticles(villager);
-                    }
-                }
-            }
-        }
+        LOGGER.info("Village Evolution initialized: villages track civilization state, " +
+                "expand automatically, and villagers gather/deliver/build, repair golems, and heal each other.");
     }
 }

@@ -1,97 +1,122 @@
 package com.villageevolution.mod.ai;
 
-import com.villageevolution.mod.util.VillagerTaskData;
-import com.villageevolution.mod.village.ConstructionProject;
+import com.villageevolution.mod.util.VillagerInjuryHelper;
 import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.npc.Villager;
 
+import java.util.Comparator;
 import java.util.EnumSet;
-import java.util.UUID;
+import java.util.List;
 
 /**
- * "Villagers participate in construction". Once a project has all its
- * materials, assigned builders walk to the site and "work" - accumulating
- * labor points with visible hammering effects - until the project is
- * finished, at which point VillageManager places the finished building.
+ * "Clerics heal injured villagers". Cleric villagers act as the village
+ * medic: they prioritize whichever wounded villager is most critically
+ * injured (see VillagerInjuryHelper), not just the nearest one, then walk
+ * over, heal them, and apply Regeneration.
  */
-public class ConstructionWorkGoal extends Goal {
+public class HealWoundedVillagerGoal extends Goal {
 
-    private static final int WORK_INTERVAL = 20;
-    private static final int LABOR_PER_TICK = 6;
+    private static final double SEARCH_RADIUS = 16.0;
+    private static final double HEAL_RANGE = 2.5;
+    private static final int HEAL_INTERVAL = 20;
+    private static final float HEAL_AMOUNT = 3.0F;
+    private static final int MAX_PURSUIT_TICKS = 600;
 
-    private final Villager villager;
-    private int workCooldown;
+    private final Villager cleric;
+    private Villager patient;
+    private int healCooldown;
+    private int pursuitTicks;
 
-    public ConstructionWorkGoal(Villager villager) {
-        this.villager = villager;
+    public HealWoundedVillagerGoal(Villager cleric) {
+        this.cleric = cleric;
         this.setFlags(EnumSet.of(Flag.MOVE, Flag.LOOK));
     }
 
     @Override
     public boolean canUse() {
-        return VillagerTaskData.getTask(villager) == VillagerTaskData.Task.BUILD;
+        if (cleric.isBaby() || cleric.isSleeping()) return false;
+        if (cleric.getRandom().nextInt(60) != 0) return false;
+
+        List<Villager> wounded = cleric.level().getEntitiesOfClass(
+                Villager.class,
+                cleric.getBoundingBox().inflate(SEARCH_RADIUS),
+                v -> v != cleric && v.isAlive() && VillagerInjuryHelper.isWounded(v)
+        );
+        if (wounded.isEmpty()) return false;
+
+        // Most critically injured first; ties broken by distance.
+        wounded.sort(Comparator
+                .comparingDouble(VillagerInjuryHelper::severity).reversed()
+                .thenComparingDouble(v -> v.distanceToSqr(cleric)));
+        this.patient = wounded.get(0);
+        return true;
     }
 
     @Override
     public boolean canContinueToUse() {
-        return VillagerTaskData.getTask(villager) == VillagerTaskData.Task.BUILD;
+        return patient != null
+                && patient.isAlive()
+                && VillagerInjuryHelper.isWounded(patient)
+                && pursuitTicks < MAX_PURSUIT_TICKS;
     }
 
     @Override
     public void start() {
-        workCooldown = 0;
+        pursuitTicks = 0;
+        healCooldown = 0;
     }
 
     @Override
     public void stop() {
-        villager.getNavigation().stop();
+        patient = null;
+        cleric.getNavigation().stop();
+    }
+
+    @Override
+    public boolean isInterruptable() {
+        return true;
     }
 
     @Override
     public void tick() {
-        if (!(villager.level() instanceof ServerLevel level)) return;
+        if (patient == null) return;
+        pursuitTicks++;
+        cleric.getLookControl().setLookAt(patient, 30.0F, 30.0F);
 
-        BlockPos anchor = VillagerTaskData.getVillageAnchor(villager);
-        UUID projectId = VillagerTaskData.getProjectId(villager);
-        if (anchor == null || projectId == null) {
-            VillagerTaskData.setIdle(villager);
+        if (cleric.distanceToSqr(patient) > HEAL_RANGE * HEAL_RANGE) {
+            cleric.getNavigation().moveTo(patient, 0.5D);
             return;
         }
 
-        VillageInstance village = VillageSavedData.get(level).findNear(anchor, VillageManager.SEARCH_RADIUS);
-        ConstructionProject project = village != null ? village.findProject(projectId).orElse(null) : null;
-        if (village == null || project == null) {
-            VillagerTaskData.setIdle(villager);
-            return;
-        }
+        cleric.getNavigation().stop();
+        if (--healCooldown <= 0) {
+            healCooldown = HEAL_INTERVAL;
+            boolean wasWounded = VillagerInjuryHelper.isWounded(patient);
+            patient.heal(HEAL_AMOUNT);
+            patient.addEffect(new MobEffectInstance(MobEffects.REGENERATION, 60, 0));
 
-        BlockPos site = project.getOrigin();
-        villager.getLookControl().setLookAt(site.getX() + 0.5, site.getY() + 1, site.getZ() + 0.5);
-        double distSqr = villager.blockPosition().distSqr(site);
-        if (distSqr > 4.0 * 4.0) {
-            villager.getNavigation().moveTo(site.getX() + 0.5, site.getY(), site.getZ() + 0.5, 0.5D);
-            return;
-        }
+            if (cleric.level() instanceof ServerLevel serverLevel) {
+                serverLevel.sendParticles(ParticleTypes.EFFECT,
+                        patient.getX(), patient.getY() + patient.getBbHeight() + 0.2, patient.getZ(),
+                        6, 0.3, 0.2, 0.3, 0.02);
 
-        villager.getNavigation().stop();
-        if (--workCooldown <= 0) {
-            workCooldown = WORK_INTERVAL;
-            project.addLabor(LABOR_PER_TICK);
-            level.sendParticles(ParticleTypes.CRIT, site.getX() + 0.5, site.getY() + 1, site.getZ() + 0.5, 4, 1.0, 0.5, 1.0, 0.0);
-            level.playSound(null, site, SoundEvents.STONE_HIT, SoundSource.NEUTRAL, 0.5F, 1.0F);
-        }
-
-        if (project.isReadyToComplete()) {
-            VillageManager.completeProject(level, village, project);
-            VillagerTaskData.setIdle(villager);
+                if (wasWounded && !VillagerInjuryHelper.isWounded(patient)) {
+                    VillageInstance village = VillageSavedData.get(serverLevel)
+                            .findNear(cleric.blockPosition(), VillageManager.SEARCH_RADIUS);
+                    if (village != null) village.getStatistics().incrementVillagersHealed();
+                }
+            }
+            cleric.level().playSound(null, cleric.blockPosition(),
+                    SoundEvents.HONEY_DRINK, SoundSource.NEUTRAL, 0.5F, 1.4F);
         }
     }
 }

@@ -82,12 +82,36 @@ public class ConstructionWorkGoal extends Goal {
         }
 
         villager.getNavigation().stop();
-        if (--workCooldown <= 0) {
-            workCooldown = WORK_INTERVAL;
-            project.addLabor(LABOR_PER_TICK);
-            level.sendParticles(ParticleTypes.CRIT, site.getX() + 0.5, site.getY() + 1, site.getZ() + 0.5, 4, 1.0, 0.5, 1.0, 0.0);
-            level.playSound(null, site, SoundEvents.STONE_HIT, SoundSource.NEUTRAL, 0.5F, 1.0F);
+
+        // Survey the footprint once, then demolish anything standing in it before
+        // any construction labor counts. This is the ONLY circumstance in which a
+        // villager breaks a block.
+        project.ensureClearQueue(level);
+
+        if (--workCooldown > 0) {
+            if (project.isReadyToComplete()) {
+                VillageManager.completeProject(level, village, project);
+                VillagerTaskData.setIdle(villager);
+            }
+            return;
         }
+        workCooldown = WORK_INTERVAL;
+
+        if (project.hasClearingWork()) {
+            BlockPos clearTarget = project.peekClearTarget();
+            if (clearTarget != null && !level.getBlockState(clearTarget).isAir()) {
+                villager.getLookControl().setLookAt(
+                        clearTarget.getX() + 0.5, clearTarget.getY() + 0.5, clearTarget.getZ() + 0.5);
+                level.destroyBlock(clearTarget, false);
+                level.playSound(null, clearTarget, SoundEvents.STONE_BREAK, SoundSource.NEUTRAL, 0.6F, 1.0F);
+            }
+            project.popClearTarget();
+            return; // clearing this tick instead of building
+        }
+
+        project.addLabor(LABOR_PER_TICK);
+        level.sendParticles(ParticleTypes.CRIT, site.getX() + 0.5, site.getY() + 1, site.getZ() + 0.5, 4, 1.0, 0.5, 1.0, 0.0);
+        level.playSound(null, site, SoundEvents.STONE_HIT, SoundSource.NEUTRAL, 0.5F, 1.0F);
 
         if (project.isReadyToComplete()) {
             VillageManager.completeProject(level, village, project);

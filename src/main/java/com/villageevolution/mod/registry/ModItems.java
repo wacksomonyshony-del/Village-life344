@@ -4,6 +4,7 @@ import com.villageevolution.mod.VillagerEvolutionMod;
 import com.villageevolution.mod.item.BlueprintItem;
 import com.villageevolution.mod.village.BuildingType;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.RegistryObject;
@@ -18,6 +19,10 @@ public final class ModItems {
             DeferredRegister.create(Registries.ITEM, VillagerEvolutionMod.MOD_ID);
 
     private static final Map<BuildingType, RegistryObject<Item>> BLUEPRINTS = new EnumMap<>(BuildingType.class);
+
+    /** Item form of the chunk loader block. */
+    public static final RegistryObject<Item> CHUNK_LOADER = ITEMS.register("chunk_loader",
+            () -> new BlockItem(ModBlocks.CHUNK_LOADER.get(), new Item.Properties()));
 
     static {
         for (BuildingType type : BuildingType.values()) {

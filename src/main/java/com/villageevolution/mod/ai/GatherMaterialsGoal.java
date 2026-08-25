@@ -1,5 +1,6 @@
 package com.villageevolution.mod.ai;
 
+import com.villageevolution.mod.ModSettings;
 import com.villageevolution.mod.util.VillagerTaskData;
 import com.villageevolution.mod.village.ConstructionProject;
 import com.villageevolution.mod.village.ResourceType;
@@ -46,6 +47,9 @@ public class GatherMaterialsGoal extends Goal {
 
     @Override
     public boolean canUse() {
+        // With creative materials on there is nothing to gather, so villagers
+        // never go out and mine the landscape.
+        if (ModSettings.CREATIVE_MATERIALS) return false;
         if (villager.isBaby()) return false;
         if (VillagerTaskData.getTask(villager) != VillagerTaskData.Task.GATHER) return false;
         return findProject().isPresent();

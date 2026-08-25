@@ -68,12 +68,12 @@ public class BlueprintItem extends Item {
         if (upgrade) {
             VillageBuilding building = existing.get(0);
             village.addProject(new ConstructionProject(buildingType, building.getLevel() + 1,
-                    building.getOrigin(), building.getFacing(), true));
+                    building.getOrigin(), building.getFacing(), true, level.getGameTime()));
             player.displayClientMessage(Component.literal(
                     "Queued an upgrade for the village's " + buildingType.getDisplayName() + "."), true);
         } else {
             BlockPos site = playerPos.relative(facing, 3);
-            village.addProject(new ConstructionProject(buildingType, 1, site, facing, false));
+            village.addProject(new ConstructionProject(buildingType, 1, site, facing, false, level.getGameTime()));
             player.displayClientMessage(Component.literal(
                     "Queued construction of a new " + buildingType.getDisplayName() + "."), true);
         }

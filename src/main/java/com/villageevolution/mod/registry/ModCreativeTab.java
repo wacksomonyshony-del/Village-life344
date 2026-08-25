@@ -23,6 +23,7 @@ public final class ModCreativeTab {
                         for (BuildingType type : BuildingType.values()) {
                             output.accept(ModItems.blueprint(type).get());
                         }
+                        output.accept(ModItems.CHUNK_LOADER.get());
                     })
                     .build());
 

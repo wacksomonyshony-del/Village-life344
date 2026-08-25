@@ -7,6 +7,7 @@ import com.villageevolution.mod.ai.GatherMaterialsGoal;
 import com.villageevolution.mod.ai.HealWoundedVillagerGoal;
 import com.villageevolution.mod.ai.RepairIronGolemGoal;
 import com.villageevolution.mod.util.GoalAccessHelper;
+import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
 import net.minecraft.server.level.ServerLevel;
@@ -34,7 +35,10 @@ public class VillagerJoinHandler {
         if (!(event.getLevel() instanceof ServerLevel serverLevel)) return;
 
         VillageSavedData data = VillageSavedData.get(serverLevel);
-        data.findOrCreate(villager.blockPosition(), VillageManager.SEARCH_RADIUS);
+        VillageInstance village = data.findOrCreate(villager.blockPosition(), VillageManager.SEARCH_RADIUS);
+        // Count the newcomer straight away rather than waiting for the next
+        // village tick, so freshly bred/cured villagers show up in the total.
+        VillageManager.refreshPopulation(serverLevel, village);
 
         // Universal caretaking + civilization-building behaviors.
         GoalAccessHelper.addGoal(villager, 6, new RepairIronGolemGoal(villager));

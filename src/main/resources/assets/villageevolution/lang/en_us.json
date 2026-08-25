@@ -9,5 +9,7 @@
   "item.villageevolution.blueprint_clinic": "Clinic Blueprint",
   "item.villageevolution.blueprint_watchtower": "Watchtower Blueprint",
   "item.villageevolution.blueprint_wall_gate": "Wall Gate Blueprint",
-  "item.villageevolution.blueprint_hospital": "Hospital Blueprint"
+  "item.villageevolution.blueprint_hospital": "Hospital Blueprint",
+  "block.villageevolution.chunk_loader": "Chunk Loader",
+  "item.villageevolution.chunk_loader": "Chunk Loader"
 }

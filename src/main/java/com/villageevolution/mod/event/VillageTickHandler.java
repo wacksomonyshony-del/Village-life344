@@ -1,6 +1,7 @@
 package com.villageevolution.mod.event;
 
 import com.villageevolution.mod.util.VillagerInjuryHelper;
+import com.villageevolution.mod.util.VillagerLabelHelper;
 import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
@@ -17,6 +18,8 @@ public class VillageTickHandler {
     /** Base cadence; growth/project checks are further gated by their own intervals inside VillageManager. */
     private static final int CHECK_INTERVAL = 100;
     private static final int INJURY_PARTICLE_INTERVAL = 40;
+    /** How often the floating task labels are refreshed (1 second). */
+    private static final int LABEL_INTERVAL = 20;
 
     @SubscribeEvent
     public void onServerTick(TickEvent.ServerTickEvent event) {
@@ -29,19 +32,30 @@ public class VillageTickHandler {
         if (server == null) return;
 
         int tick = server.getTickCount();
-        if (tick % CHECK_INTERVAL != 0) return;
+        boolean doVillageWork = tick % CHECK_INTERVAL == 0;
+        boolean doLabels = tick % LABEL_INTERVAL == 0;
+        if (!doVillageWork && !doLabels) return;
 
         for (ServerLevel level : server.getAllLevels()) {
             VillageSavedData data = VillageSavedData.get(level);
             long gameTime = level.getGameTime();
             for (VillageInstance village : data.getVillages()) {
-                VillageManager.tickGrowth(level, village, gameTime);
-                VillageManager.tickProjects(level, village, gameTime);
+                AABB area = new AABB(village.getAnchor()).inflate(VillageManager.SEARCH_RADIUS);
 
-                if (tick % INJURY_PARTICLE_INTERVAL == 0) {
-                    AABB area = new AABB(village.getAnchor()).inflate(VillageManager.SEARCH_RADIUS);
+                if (doVillageWork) {
+                    VillageManager.tickGrowth(level, village, gameTime);
+                    VillageManager.tickProjects(level, village, gameTime);
+
+                    if (tick % INJURY_PARTICLE_INTERVAL == 0) {
+                        for (Villager villager : level.getEntitiesOfClass(Villager.class, area)) {
+                            VillagerInjuryHelper.showInjuryParticles(villager);
+                        }
+                    }
+                }
+
+                if (doLabels) {
                     for (Villager villager : level.getEntitiesOfClass(Villager.class, area)) {
-                        VillagerInjuryHelper.showInjuryParticles(villager);
+                        VillagerLabelHelper.update(level, villager);
                     }
                 }
             }

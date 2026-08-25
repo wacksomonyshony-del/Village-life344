@@ -34,6 +34,10 @@ public class VillageInstance {
     private int population;
     private int housingCapacity;
 
+    /** Daily construction budget (see ModSettings.PROJECTS_PER_DAY). */
+    private long lastDayIndex = -1;
+    private int projectsStartedToday;
+
     private final Map<ResourceType, Integer> resources = new EnumMap<>(ResourceType.class);
     private final List<VillageBuilding> buildings = new ArrayList<>();
     private final List<ConstructionProject> projects = new ArrayList<>();
@@ -76,6 +80,19 @@ public class VillageInstance {
     public boolean isOverpopulated() {
         return population > housingCapacity;
     }
+
+    // ---- daily construction budget ---------------------------------------------
+
+    /** Resets the per-day project counter when the world rolls over to a new day. */
+    public void rolloverDay(long dayIndex) {
+        if (dayIndex != lastDayIndex) {
+            lastDayIndex = dayIndex;
+            projectsStartedToday = 0;
+        }
+    }
+
+    public int getProjectsStartedToday() { return projectsStartedToday; }
+    public void incrementProjectsStartedToday() { this.projectsStartedToday++; }
 
     // ---- resources -------------------------------------------------------------
 
@@ -135,6 +152,8 @@ public class VillageInstance {
         tag.putLong("LastTick", lastGrowthTick);
         tag.putInt("BonusGolems", bonusGolemsSpawned);
         tag.putInt("Population", population);
+        tag.putLong("LastDay", lastDayIndex);
+        tag.putInt("ProjectsToday", projectsStartedToday);
 
         CompoundTag resourceTag = new CompoundTag();
         for (Map.Entry<ResourceType, Integer> entry : resources.entrySet()) {
@@ -157,6 +176,8 @@ public class VillageInstance {
         instance.lastGrowthTick = tag.getLong("LastTick");
         instance.bonusGolemsSpawned = tag.getInt("BonusGolems");
         instance.population = tag.getInt("Population");
+        instance.lastDayIndex = tag.contains("LastDay") ? tag.getLong("LastDay") : -1;
+        instance.projectsStartedToday = tag.getInt("ProjectsToday");
 
         CompoundTag resourceTag = tag.getCompound("Resources");
         for (ResourceType type : ResourceType.values()) {

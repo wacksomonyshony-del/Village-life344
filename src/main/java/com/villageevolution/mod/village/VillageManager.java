@@ -1,5 +1,6 @@
 package com.villageevolution.mod.village;
 
+import com.villageevolution.mod.ModSettings;
 import com.villageevolution.mod.util.VillagerTaskData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.RandomSource;
@@ -48,7 +49,6 @@ public class VillageManager {
         List<Villager> villagers = level.getEntitiesOfClass(Villager.class, area);
         List<IronGolem> golems = level.getEntitiesOfClass(IronGolem.class, area);
 
-        village.setPopulation(villagers.size());
         if (villagers.isEmpty()) return; // abandoned; don't grow or shrink further
 
         // Food upkeep: population consumes stockpiled food. A shortage slows growth.
@@ -118,16 +118,36 @@ public class VillageManager {
         if (gameTime - village.getLastProjectTick() < PROJECT_INTERVAL_TICKS) return;
         village.setLastProjectTick(gameTime);
 
-        if (village.getProjects().isEmpty()) {
-            considerNewProject(level, village);
+        // Headcount is refreshed here (every PROJECT_INTERVAL_TICKS) rather than on
+        // the 5-minute growth tick, so villagers that are bred, cured, or that
+        // wander in are counted almost immediately.
+        refreshPopulation(level, village);
+
+        village.rolloverDay(level.getDayTime() / 24000L);
+
+        if (village.getProjects().size() < ModSettings.MAX_CONCURRENT_PROJECTS
+                && village.getProjectsStartedToday() < ModSettings.PROJECTS_PER_DAY
+                && considerNewProject(level, village, gameTime)) {
+            village.incrementProjectsStartedToday();
         }
         assignWorkers(level, village);
     }
 
-    /** Decides what the village needs most and queues a project for it, if resources/space allow. */
-    private static void considerNewProject(ServerLevel level, VillageInstance village) {
+    /** Recounts the villagers inside the village radius and updates population + housing. */
+    public static void refreshPopulation(ServerLevel level, VillageInstance village) {
+        AABB area = new AABB(village.getAnchor()).inflate(SEARCH_RADIUS);
+        village.setPopulation(level.getEntitiesOfClass(Villager.class, area).size());
+        village.recalculateHousingCapacity();
+    }
+
+    /**
+     * Decides what the village needs most and queues a project for it, if
+     * resources/space allow. Returns true if a project was actually queued,
+     * so the caller can charge it against the daily budget.
+     */
+    private static boolean considerNewProject(ServerLevel level, VillageInstance village, long gameTime) {
         BuildingType next = decideNextBuilding(village);
-        if (next == null) return;
+        if (next == null) return false;
 
         boolean isUpgrade = village.hasBuildingOfType(next)
                 && village.getBuildingsOfType(next).stream().anyMatch(VillageBuilding::canUpgrade)
@@ -137,14 +157,16 @@ public class VillageManager {
         if (isUpgrade) {
             VillageBuilding existing = village.getBuildingsOfType(next).stream()
                     .filter(VillageBuilding::canUpgrade).findFirst().orElse(null);
-            if (existing == null) return;
-            village.addProject(new ConstructionProject(next, existing.getLevel() + 1, existing.getOrigin(), existing.getFacing(), true));
+            if (existing == null) return false;
+            village.addProject(new ConstructionProject(next, existing.getLevel() + 1,
+                    existing.getOrigin(), existing.getFacing(), true, gameTime));
         } else {
             BlockPos site = findBuildSite(level, anchor);
-            if (site == null) return;
+            if (site == null) return false;
             Direction facing = Direction.Plane.HORIZONTAL.getRandomDirection(RANDOM);
-            village.addProject(new ConstructionProject(next, 1, site, facing, false));
+            village.addProject(new ConstructionProject(next, 1, site, facing, false, gameTime));
         }
+        return true;
     }
 
     /** Priority order reflecting a believable settlement growth pattern. */

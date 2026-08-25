@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "villageevolution:block/chunk_loader" }
+  }
+}

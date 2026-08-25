@@ -4,3 +4,13 @@
     "layer0": "villageevolution:item/blueprint_wall_gate"
   }
 }
+groovypluginManagement {
+    repositories {
+        maven { url = "https://maven.minecraftforge.net/" }
+        maven { url = "https://neoforged.net" }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = "your-mod-id"

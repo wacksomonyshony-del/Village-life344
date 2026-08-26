@@ -1,6 +1,7 @@
 package com.villageevolution.mod.registry;
 
 import com.villageevolution.mod.VillagerEvolutionMod;
+import com.villageevolution.mod.block.ChunkLoaderTier;
 import com.villageevolution.mod.village.BuildingType;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -23,7 +24,9 @@ public final class ModCreativeTab {
                         for (BuildingType type : BuildingType.values()) {
                             output.accept(ModItems.blueprint(type).get());
                         }
-                        output.accept(ModItems.CHUNK_LOADER.get());
+                        for (ChunkLoaderTier tier : ChunkLoaderTier.values()) {
+                            output.accept(ModItems.chunkLoader(tier).get());
+                        }
                     })
                     .build());
 

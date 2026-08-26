@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "CEC",
+    "EPE",
+    "CEC"
+  ],
+  "key": {
+    "C": {
+      "item": "minecraft:diamond_block"
+    },
+    "E": {
+      "item": "minecraft:echo_shard"
+    },
+    "P": {
+      "item": "villageevolution:chunk_loader_elite"
+    }
+  },
+  "result": {
+    "id": "villageevolution:chunk_loader_ultimate",
+    "count": 1
+  }
+}

@@ -6,26 +6,51 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
+import net.minecraft.world.level.block.state.properties.Half;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Procedurally generates the block layout for each building type/level
- * rather than loading external NBT structure files, so the whole mod stays
- * self-contained in source. Layouts are simple but distinct per building
- * type, and scale up (bigger footprint, better materials) with level -
- * this is what satisfies "larger upgraded versions as the settlement
- * develops".
+ * Procedurally generates the block layout for each building type/level.
+ *
+ * Style: one unified medieval palette - stone-brick footings, timber-framed
+ * plaster walls (oak logs as posts and beams with plaster infill), pitched
+ * stair roofs, trimmed glass-pane windows, and lantern lighting. Every
+ * structure is genuinely hollow, has a real door, and contains at least one
+ * villager job-site block so the settlement develops a spread of professions
+ * instead of a village of unemployed villagers.
  *
  * Coordinates are local to the building: x = sideways ("width"), y = up,
- * z = forward (the direction the building faces, e.g. its door/front).
- * transform() rotates local coordinates into world space based on the
- * building's stored facing direction.
+ * z = forward (the direction the building faces, i.e. its front/door side).
+ * transform() rotates local coordinates into world space.
+ *
+ * Note on AIR: interiors, doorways, and the clearance ring are placed as
+ * explicit AIR states. That matters - ConstructionProject#ensureClearQueue
+ * treats any non-air world block sitting in an AIR placement as something to
+ * demolish, so writing air here is what makes builders hollow out a hillside
+ * rather than leaving the building half-buried in it.
  */
 public final class BlueprintLibrary {
 
     private BlueprintLibrary() {}
+
+    // ---- palette --------------------------------------------------------------
+
+    private static final BlockState FOOTING     = Blocks.STONE_BRICKS.defaultBlockState();
+    private static final BlockState FOOTING_ALT = Blocks.MOSSY_STONE_BRICKS.defaultBlockState();
+    private static final BlockState POST        = Blocks.OAK_LOG.defaultBlockState();
+    private static final BlockState BEAM        = Blocks.STRIPPED_OAK_LOG.defaultBlockState();
+    private static final BlockState PLASTER     = Blocks.WHITE_TERRACOTTA.defaultBlockState();
+    private static final BlockState PLANKS      = Blocks.OAK_PLANKS.defaultBlockState();
+    private static final BlockState FLOOR       = Blocks.SPRUCE_PLANKS.defaultBlockState();
+    private static final BlockState ROOF        = Blocks.DARK_OAK_STAIRS.defaultBlockState();
+    private static final BlockState ROOF_SLAB   = Blocks.DARK_OAK_SLAB.defaultBlockState();
+    private static final BlockState PANE        = Blocks.GLASS_PANE.defaultBlockState();
+    private static final BlockState LANTERN     = Blocks.LANTERN.defaultBlockState();
+    private static final BlockState AIR         = Blocks.AIR.defaultBlockState();
+    private static final BlockState PATH        = Blocks.DIRT_PATH.defaultBlockState();
 
     public static List<BlockPlacement> generate(BuildingType type, int level, BlockPos origin, Direction facing) {
         List<BlockPlacement> out = new ArrayList<>();
@@ -44,7 +69,7 @@ public final class BlueprintLibrary {
         return out;
     }
 
-    // ---- coordinate helpers -------------------------------------------------
+    // ---- coordinate helpers ---------------------------------------------------
 
     private static BlockPos transform(BlockPos origin, Direction facing, int lx, int ly, int lz) {
         Direction right = facing.getClockWise();
@@ -55,11 +80,12 @@ public final class BlueprintLibrary {
     }
 
     private static void put(List<BlockPlacement> out, BlockPos origin, Direction facing,
-                             int lx, int ly, int lz, BlockState state) {
+                            int lx, int ly, int lz, BlockState state) {
         out.add(new BlockPlacement(transform(origin, facing, lx, ly, lz), state));
     }
 
-    private static void box(List<BlockPlacement> out, BlockPos origin, Direction facing,
+    /** Upper bounds exclusive. */
+    private static void fill(List<BlockPlacement> out, BlockPos origin, Direction facing,
                              int x0, int y0, int z0, int x1, int y1, int z1, BlockState state) {
         for (int x = x0; x < x1; x++)
             for (int y = y0; y < y1; y++)
@@ -67,212 +93,436 @@ public final class BlueprintLibrary {
                     put(out, origin, facing, x, y, z, state);
     }
 
-    private static void hollowBox(List<BlockPlacement> out, BlockPos origin, Direction facing,
-                                   int x0, int y0, int z0, int x1, int y1, int z1, BlockState wall, BlockState floor) {
-        for (int x = x0; x < x1; x++)
-            for (int z = z0; z < z1; z++)
-                put(out, origin, facing, x, y0, z, floor);
-        for (int x = x0; x < x1; x++)
-            for (int y = y0; y < y1; y++) {
-                put(out, origin, facing, x, y, z0, wall);
-                put(out, origin, facing, x, y, z1 - 1, wall);
+    // ---- structural helpers ---------------------------------------------------
+
+    /**
+     * A timber-framed wall shell: stone footing course, corner posts, a beam
+     * course under the eaves, plaster infill, and a hollow interior.
+     */
+    private static void shell(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                              int w, int h, int d) {
+        for (int x = 0; x < w; x++)
+            for (int z = 0; z < d; z++)
+                put(out, origin, facing, x, -1, z, ((x + z) % 5 == 0) ? FOOTING_ALT : FOOTING);
+
+        fill(out, origin, facing, 0, 0, 0, w, 1, d, FLOOR);
+        fill(out, origin, facing, 1, 1, 1, w - 1, h, d - 1, AIR);
+
+        for (int y = 1; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                for (int z = 0; z < d; z++) {
+                    boolean edge = x == 0 || z == 0 || x == w - 1 || z == d - 1;
+                    if (!edge) continue;
+                    boolean corner = (x == 0 || x == w - 1) && (z == 0 || z == d - 1);
+
+                    BlockState state;
+                    if (corner) state = POST;
+                    else if (y == h - 1) state = BEAM;
+                    else if (x % 4 == 0 || z % 4 == 0) state = POST;
+                    else if (y == 1) state = PLANKS;
+                    else state = PLASTER;
+                    put(out, origin, facing, x, y, z, state);
+                }
             }
-        for (int z = z0; z < z1; z++)
-            for (int y = y0; y < y1; y++) {
-                put(out, origin, facing, x0, y, z, wall);
-                put(out, origin, facing, x1 - 1, y, z, wall);
+        }
+    }
+
+    /**
+     * Pitched gable roof, ridge running left-to-right so the slopes face front
+     * and back. Sits on the eaves and overhangs one block on every side.
+     */
+    private static void gableRoof(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                  int w, int baseY, int d) {
+        Direction front = facing;
+        Direction back = facing.getOpposite();
+        int layers = (d + 2) / 2;
+
+        for (int i = 0; i < layers; i++) {
+            int y = baseY + i;
+            int zLow = -1 + i;
+            int zHigh = d - i;
+            if (zLow > zHigh) break;
+
+            for (int x = -1; x <= w; x++) {
+                if (zLow == zHigh) {
+                    put(out, origin, facing, x, y, zLow, ROOF_SLAB);
+                } else {
+                    put(out, origin, facing, x, y, zLow,
+                            ROOF.setValue(BlockStateProperties.HORIZONTAL_FACING, back)
+                                .setValue(BlockStateProperties.HALF, Half.BOTTOM));
+                    put(out, origin, facing, x, y, zHigh,
+                            ROOF.setValue(BlockStateProperties.HORIZONTAL_FACING, front)
+                                .setValue(BlockStateProperties.HALF, Half.BOTTOM));
+                }
             }
+            // Gable ends closed in, loft left hollow.
+            for (int z = zLow + 1; z < zHigh; z++) {
+                put(out, origin, facing, -1, y, z, PLASTER);
+                put(out, origin, facing, w, y, z, PLASTER);
+                for (int x = 0; x < w; x++) put(out, origin, facing, x, y, z, AIR);
+            }
+        }
+    }
+
+    /** A working two-high door in the front wall, with an approach path. */
+    private static void frontDoor(List<BlockPlacement> out, BlockPos origin, Direction facing, int x) {
+        BlockState lower = Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.LOWER);
+        BlockState upper = Blocks.OAK_DOOR.defaultBlockState()
+                .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER);
+        put(out, origin, facing, x, 1, 0, lower);
+        put(out, origin, facing, x, 2, 0, upper);
+        put(out, origin, facing, x, 0, -1, PATH);
+        put(out, origin, facing, x, 1, -1, AIR);
+        put(out, origin, facing, x, 2, -1, AIR);
+    }
+
+    private static void windows(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                int w, int d, int y) {
+        for (int z = 2; z < d - 1; z += 3) {
+            put(out, origin, facing, 0, y, z, PANE);
+            put(out, origin, facing, w - 1, y, z, PANE);
+        }
+        for (int x = 2; x < w - 1; x += 3) {
+            put(out, origin, facing, x, y, d - 1, PANE);
+        }
+    }
+
+    /** A ring of walking space cleared around the outside, paved. */
+    private static void clearance(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                  int w, int d) {
+        for (int x = -2; x <= w + 1; x++) {
+            for (int z = -2; z <= d + 1; z++) {
+                if (x >= -1 && x <= w && z >= -1 && z <= d) continue;
+                put(out, origin, facing, x, 0, z, PATH);
+                put(out, origin, facing, x, 1, z, AIR);
+                put(out, origin, facing, x, 2, z, AIR);
+            }
+        }
+    }
+
+    private static void lanterns(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                 int w, int h, int d) {
+        put(out, origin, facing, 1, h - 1, 1, LANTERN);
+        put(out, origin, facing, w - 2, h - 1, d - 2, LANTERN);
+    }
+
+    private static void bed(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                            int x, int z, BlockState bedColour) {
+        put(out, origin, facing, x, 1, z, bedColour
+                .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                .setValue(BlockStateProperties.BED_PART, BedPart.FOOT));
+        put(out, origin, facing, x, 1, z + 1, bedColour
+                .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
+                .setValue(BlockStateProperties.BED_PART, BedPart.HEAD));
+    }
+
+    /**
+     * Houses rotate through the job sites no dedicated building supplies,
+     * picked deterministically from the plot position, so a village ends up
+     * with a mix of trades rather than a street of identical ones.
+     */
+    private static BlockState houseWorkstation(BlockPos origin) {
+        BlockState[] options = {
+                Blocks.SMOKER.defaultBlockState(),             // butcher
+                Blocks.STONECUTTER.defaultBlockState(),        // mason
+                Blocks.LOOM.defaultBlockState(),               // shepherd
+                Blocks.CARTOGRAPHY_TABLE.defaultBlockState(),  // cartographer
+                Blocks.FLETCHING_TABLE.defaultBlockState(),    // fletcher
+                Blocks.CAULDRON.defaultBlockState(),           // leatherworker
+        };
+        int hash = Math.abs(origin.getX() * 31 + origin.getZ() * 17);
+        return options[hash % options.length];
     }
 
     // ---- building generators --------------------------------------------------
 
     private static void house(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int size = 4 + level * 2; // 6, 8, 10
-        int height = 3 + level;
-        BlockState wall = level >= 3 ? Blocks.COBBLESTONE.defaultBlockState() : Blocks.OAK_PLANKS.defaultBlockState();
-        BlockState floor = Blocks.OAK_PLANKS.defaultBlockState();
-        BlockState roof = level >= 2 ? Blocks.SPRUCE_SLAB.defaultBlockState() : Blocks.OAK_SLAB.defaultBlockState();
+        int w = 5 + level * 2;
+        int d = 6 + level * 2;
+        int h = 4 + (level > 2 ? 1 : 0);
 
-        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
-        box(out, origin, facing, 1, height, 1, size - 1, height + 1, size - 1, roof);
+        clearance(out, origin, facing, w, d);
+        shell(out, origin, facing, w, h, d);
+        gableRoof(out, origin, facing, w, h, d);
+        frontDoor(out, origin, facing, w / 2);
+        windows(out, origin, facing, w, d, 2);
+        lanterns(out, origin, facing, w, h, d);
 
-        // Door opening + windows.
-        int mid = size / 2;
-        put(out, origin, facing, mid, 0, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, mid, 1, 0, Blocks.AIR.defaultBlockState());
-        if (size >= 6) {
-            put(out, origin, facing, 1, 1, 0, Blocks.GLASS_PANE.defaultBlockState());
-            put(out, origin, facing, size - 2, 1, 0, Blocks.GLASS_PANE.defaultBlockState());
+        for (int i = 0; i < level && 1 + i * 2 < w - 1; i++) {
+            bed(out, origin, facing, 1 + i * 2, d - 3, Blocks.RED_BED.defaultBlockState());
         }
-        // Bonus beds for higher tiers to reflect more residents.
-        int beds = level;
-        for (int i = 0; i < beds; i++) {
-            put(out, origin, facing, 1, 1, 1 + i * 2, Blocks.RED_BED.defaultBlockState()
-                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
-                    .setValue(BlockStateProperties.BED_PART, BedPart.FOOT));
+
+        put(out, origin, facing, w - 2, 1, 1, Blocks.CRAFTING_TABLE.defaultBlockState());
+        put(out, origin, facing, w - 2, 1, 2, Blocks.BARREL.defaultBlockState());
+        put(out, origin, facing, 1, 1, d - 2, Blocks.FURNACE.defaultBlockState());
+        put(out, origin, facing, 2, 1, 1, houseWorkstation(origin));
+
+        if (level >= 2) {
+            put(out, origin, facing, 1, 1, 2, Blocks.OAK_STAIRS.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing));
         }
     }
 
     private static void townHall(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int size = 9 + level * 3;
-        int height = 5 + level * 2;
-        BlockState wall = Blocks.STONE_BRICKS.defaultBlockState();
-        BlockState floor = Blocks.POLISHED_ANDESITE.defaultBlockState();
-        BlockState roof = Blocks.DARK_OAK_SLAB.defaultBlockState();
+        int w = 11 + level * 2;
+        int d = 11 + level * 2;
+        int h = 6 + level;
 
-        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
-        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
+        clearance(out, origin, facing, w, d);
+        shell(out, origin, facing, w, h, d);
+        gableRoof(out, origin, facing, w, h, d);
+        windows(out, origin, facing, w, d, 3);
+        lanterns(out, origin, facing, w, h, d);
 
-        int mid = size / 2;
-        for (int y = 0; y < 3; y++) put(out, origin, facing, mid, y, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, mid, 2, 1, Blocks.BELL.defaultBlockState());
-        put(out, origin, facing, mid - 1, height, mid, Blocks.OAK_FENCE.defaultBlockState());
-        put(out, origin, facing, mid - 1, height + 1, mid, Blocks.TORCH.defaultBlockState());
+        int mid = w / 2;
+        for (int x = mid - 1; x <= mid + 1; x++) {
+            for (int y = 1; y <= 3; y++) put(out, origin, facing, x, y, 0, AIR);
+            put(out, origin, facing, x, 0, -1, PATH);
+            put(out, origin, facing, x, 1, -1, AIR);
+            put(out, origin, facing, x, 2, -1, AIR);
+        }
+        put(out, origin, facing, mid - 2, 4, 0, LANTERN);
+        put(out, origin, facing, mid + 2, 4, 0, LANTERN);
+
+        put(out, origin, facing, mid, 1, d - 3, Blocks.BELL.defaultBlockState());
+        put(out, origin, facing, mid - 2, 1, d - 3, Blocks.LECTERN.defaultBlockState());
+        put(out, origin, facing, mid + 2, 1, d - 3, Blocks.BOOKSHELF.defaultBlockState());
+        for (int x = 3; x < w - 3; x += 2) {
+            put(out, origin, facing, x, 1, d - 5, Blocks.OAK_STAIRS.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing.getOpposite()));
+        }
     }
 
     private static void farm(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int size = 3 + level * 2; // 5, 7, 9
-        BlockState farmland = Blocks.FARMLAND.defaultBlockState();
-        BlockState water = Blocks.WATER.defaultBlockState();
-        BlockState wheat = Blocks.WHEAT.defaultBlockState();
-        BlockState fence = Blocks.OAK_FENCE.defaultBlockState();
+        int size = 7 + level * 2;
 
         for (int x = 0; x < size; x++) {
             for (int z = 0; z < size; z++) {
                 boolean edge = x == 0 || z == 0 || x == size - 1 || z == size - 1;
-                boolean waterChannel = (x == size / 2) || (z == size / 2);
+                boolean channel = (x == size / 2) || (z == size / 2);
+                put(out, origin, facing, x, 1, z, AIR);
+                put(out, origin, facing, x, 2, z, AIR);
                 if (edge) {
-                    put(out, origin, facing, x, 0, z, fence);
-                } else if (waterChannel) {
-                    put(out, origin, facing, x, -1, z, water);
+                    put(out, origin, facing, x, 0, z, Blocks.OAK_FENCE.defaultBlockState());
+                } else if (channel) {
+                    put(out, origin, facing, x, -1, z, Blocks.WATER.defaultBlockState());
+                    put(out, origin, facing, x, 0, z, AIR);
                 } else {
-                    put(out, origin, facing, x, -1, z, farmland);
-                    put(out, origin, facing, x, 0, z, wheat);
+                    put(out, origin, facing, x, -1, z, Blocks.FARMLAND.defaultBlockState());
+                    put(out, origin, facing, x, 0, z, Blocks.WHEAT.defaultBlockState());
                 }
             }
         }
+        put(out, origin, facing, size / 2 + 1, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState()
+                .setValue(BlockStateProperties.HORIZONTAL_FACING, facing));
+
+        // Barn beside the field, holding the farmer's composter.
+        int bw = 5, bd = 4, bh = 4;
+        for (int x = 0; x < bw; x++)
+            for (int z = 0; z < bd; z++) {
+                put(out, origin, facing, size + 1 + x, -1, z, FOOTING);
+                put(out, origin, facing, size + 1 + x, 0, z, FLOOR);
+            }
+        for (int y = 1; y < bh; y++)
+            for (int x = 0; x < bw; x++)
+                for (int z = 0; z < bd; z++) {
+                    boolean edge = x == 0 || z == 0 || x == bw - 1 || z == bd - 1;
+                    boolean corner = (x == 0 || x == bw - 1) && (z == 0 || z == bd - 1);
+                    boolean openFront = z == 0 && x > 0 && x < bw - 1;
+                    BlockState state = !edge || openFront ? AIR
+                            : corner ? POST
+                            : y == bh - 1 ? BEAM : PLANKS;
+                    put(out, origin, facing, size + 1 + x, y, z, state);
+                }
+        for (int x = -1; x <= bw; x++)
+            put(out, origin, facing, size + 1 + x, bh, bd / 2, ROOF_SLAB);
+
+        put(out, origin, facing, size + 2, 1, bd - 2, Blocks.COMPOSTER.defaultBlockState()); // farmer
+        put(out, origin, facing, size + 3, 1, bd - 2, Blocks.HAY_BLOCK.defaultBlockState());
+        put(out, origin, facing, size + 4, 1, bd - 2, Blocks.BARREL.defaultBlockState());
+        put(out, origin, facing, size + 2, bh - 1, 1, LANTERN);
     }
 
     private static void storage(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int width = 5 + level * 2;
-        int depth = 5 + level;
-        int height = 3 + level;
-        BlockState wall = Blocks.SPRUCE_PLANKS.defaultBlockState();
-        BlockState floor = Blocks.SPRUCE_PLANKS.defaultBlockState();
-        BlockState roof = Blocks.SPRUCE_SLAB.defaultBlockState();
+        int w = 7 + level * 2;
+        int d = 7 + level;
+        int h = 5;
 
-        hollowBox(out, origin, facing, 0, 0, 0, width, height, depth, wall, floor);
-        box(out, origin, facing, 0, height, 0, width, height + 1, depth, roof);
-        put(out, origin, facing, width / 2, 0, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, width / 2, 1, 0, Blocks.AIR.defaultBlockState());
+        clearance(out, origin, facing, w, d);
+        shell(out, origin, facing, w, h, d);
+        gableRoof(out, origin, facing, w, h, d);
+        frontDoor(out, origin, facing, w / 2);
+        windows(out, origin, facing, w, d, 3);
+        lanterns(out, origin, facing, w, h, d);
 
-        int chests = 2 + level * 2;
-        for (int i = 0; i < chests && i < width - 2; i++) {
-            put(out, origin, facing, 1 + i, 1, depth - 2, Blocks.CHEST.defaultBlockState());
+        for (int z = 2; z < d - 2; z++) {
+            put(out, origin, facing, 1, 1, z, Blocks.BARREL.defaultBlockState());
+            put(out, origin, facing, w - 2, 1, z, Blocks.CHEST.defaultBlockState());
+            if (level >= 2) put(out, origin, facing, 1, 2, z, Blocks.BARREL.defaultBlockState());
         }
-        put(out, origin, facing, width - 2, 1, 1, Blocks.BARREL.defaultBlockState());
+        put(out, origin, facing, 2, 1, d - 2, Blocks.BARREL.defaultBlockState());            // fisherman
+        put(out, origin, facing, w - 3, 1, d - 2, Blocks.CARTOGRAPHY_TABLE.defaultBlockState());
     }
 
     private static void blacksmith(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int size = 6 + level * 2;
-        int height = 4 + level;
-        BlockState wall = Blocks.COBBLESTONE.defaultBlockState();
-        BlockState floor = Blocks.STONE_BRICKS.defaultBlockState();
-        BlockState roof = Blocks.STONE_BRICK_SLAB.defaultBlockState();
+        int w = 8 + level * 2;
+        int d = 8 + level;
+        int h = 5;
 
-        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
-        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
-        put(out, origin, facing, size / 2, 0, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, size / 2, 1, 0, Blocks.AIR.defaultBlockState());
+        clearance(out, origin, facing, w, d);
+        shell(out, origin, facing, w, h, d);
+        gableRoof(out, origin, facing, w, h, d);
+        frontDoor(out, origin, facing, w / 2);
+        windows(out, origin, facing, w, d, 3);
+        lanterns(out, origin, facing, w, h, d);
 
-        put(out, origin, facing, 1, 1, 1, Blocks.FURNACE.defaultBlockState());
-        put(out, origin, facing, 2, 1, 1, Blocks.ANVIL.defaultBlockState());
-        if (level >= 2) {
-            put(out, origin, facing, 3, 1, 1, Blocks.BLAST_FURNACE.defaultBlockState());
-            put(out, origin, facing, 1, 1, 2, Blocks.IRON_BLOCK.defaultBlockState());
+        put(out, origin, facing, 1, 1, d - 2, Blocks.BLAST_FURNACE.defaultBlockState());   // armorer
+        put(out, origin, facing, 2, 1, d - 2, Blocks.FURNACE.defaultBlockState());
+        put(out, origin, facing, 3, 1, d - 2, Blocks.SMITHING_TABLE.defaultBlockState());  // toolsmith
+        put(out, origin, facing, 4, 1, d - 2, Blocks.GRINDSTONE.defaultBlockState());      // weaponsmith
+        put(out, origin, facing, 1, 1, 1, Blocks.ANVIL.defaultBlockState());
+        put(out, origin, facing, 2, 1, 1, Blocks.CAULDRON.defaultBlockState());
+        put(out, origin, facing, w - 2, 1, 2, Blocks.COAL_BLOCK.defaultBlockState());
+
+        for (int y = 1; y < h + 4; y++) {
+            put(out, origin, facing, 1, y, d - 1, Blocks.BRICKS.defaultBlockState());
         }
+        put(out, origin, facing, 1, h + 4, d - 1, Blocks.CAMPFIRE.defaultBlockState());
     }
 
     private static void market(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int width = 7 + level * 3;
-        int depth = 5 + level * 2;
-        BlockState floor = Blocks.POLISHED_ANDESITE.defaultBlockState();
-        BlockState post = Blocks.OAK_FENCE.defaultBlockState();
-        BlockState roof = Blocks.OAK_SLAB.defaultBlockState();
+        int w = 9 + level * 2;
+        int d = 7 + level * 2;
 
-        box(out, origin, facing, 0, -1, 0, width, 0, depth, floor);
-        for (int x = 0; x < width; x += width - 1) {
-            for (int z = 0; z < depth; z += depth - 1) {
-                box(out, origin, facing, x, 0, z, x + 1, 3, z + 1, post);
+        for (int x = -1; x <= w; x++)
+            for (int z = -1; z <= d; z++) {
+                put(out, origin, facing, x, -1, z, Blocks.STONE_BRICKS.defaultBlockState());
+                for (int y = 0; y < 4; y++) put(out, origin, facing, x, y, z, AIR);
             }
-        }
-        box(out, origin, facing, 0, 3, 0, width, 4, depth, roof);
 
-        int stalls = 2 + level;
-        for (int i = 0; i < stalls; i++) {
-            int x = 1 + (i * 2) % (width - 2);
-            put(out, origin, facing, x, 0, 1, Blocks.HAY_BLOCK.defaultBlockState());
-            put(out, origin, facing, x, 1, 1, Blocks.CANDLE.defaultBlockState());
+        for (int x = 0; x < w; x += w - 1)
+            for (int z = 0; z < d; z += Math.max(1, d - 1))
+                for (int y = 0; y < 4; y++)
+                    put(out, origin, facing, x, y, z, POST);
+
+        for (int x = -1; x <= w; x++)
+            for (int z = -1; z <= d; z++)
+                put(out, origin, facing, x, 4, z, ROOF_SLAB);
+
+        put(out, origin, facing, 1, 0, 1, Blocks.LOOM.defaultBlockState());               // shepherd
+        put(out, origin, facing, 3, 0, 1, Blocks.CARTOGRAPHY_TABLE.defaultBlockState());  // cartographer
+        put(out, origin, facing, 5, 0, 1, Blocks.FLETCHING_TABLE.defaultBlockState());    // fletcher
+        put(out, origin, facing, w - 2, 0, d - 2, Blocks.SMOKER.defaultBlockState());     // butcher
+        for (int x = 1; x < w - 1; x += 2) {
+            put(out, origin, facing, x, 0, d - 2, Blocks.HAY_BLOCK.defaultBlockState());
+            put(out, origin, facing, x, 3, d - 2, LANTERN);
         }
-        put(out, origin, facing, width / 2, 0, depth / 2, Blocks.LECTERN.defaultBlockState());
+        put(out, origin, facing, w / 2, 0, d / 2, Blocks.BELL.defaultBlockState());
     }
 
-    private static void clinicOrHospital(List<BlockPlacement> out, BlockPos origin, Direction facing, int level, boolean hospital) {
-        int size = hospital ? 12 : (6 + level * 2);
-        int height = hospital ? 6 : (4 + level);
-        BlockState wall = Blocks.QUARTZ_BLOCK.defaultBlockState();
-        BlockState floor = Blocks.SMOOTH_QUARTZ.defaultBlockState();
-        BlockState roof = Blocks.QUARTZ_SLAB.defaultBlockState();
+    private static void clinicOrHospital(List<BlockPlacement> out, BlockPos origin, Direction facing,
+                                         int level, boolean hospital) {
+        int w = hospital ? 13 : 7 + level * 2;
+        int d = hospital ? 11 : 7 + level;
+        int h = hospital ? 6 : 5;
 
-        hollowBox(out, origin, facing, 0, 0, 0, size, height, size, wall, floor);
-        box(out, origin, facing, 0, height, 0, size, height + 1, size, roof);
-        put(out, origin, facing, size / 2, 0, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, size / 2, 1, 0, Blocks.AIR.defaultBlockState());
+        clearance(out, origin, facing, w, d);
+        shell(out, origin, facing, w, h, d);
+        gableRoof(out, origin, facing, w, h, d);
+        frontDoor(out, origin, facing, w / 2);
+        windows(out, origin, facing, w, d, 3);
+        lanterns(out, origin, facing, w, h, d);
 
         int beds = hospital ? 6 : 2;
         for (int i = 0; i < beds; i++) {
-            int x = 1 + (i * 2) % (size - 2);
-            int z = 1 + ((i * 2) / (size - 2)) * 2;
-            put(out, origin, facing, x, 1, Math.min(z, size - 2), Blocks.WHITE_BED.defaultBlockState()
-                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing)
-                    .setValue(BlockStateProperties.BED_PART, BedPart.FOOT));
+            int x = 1 + (i % 3) * 2;
+            int z = 2 + (i / 3) * 3;
+            if (x < w - 1 && z + 1 < d - 1) {
+                bed(out, origin, facing, x, z, Blocks.WHITE_BED.defaultBlockState());
+            }
         }
-        put(out, origin, facing, size / 2, 1, size - 2, Blocks.BREWING_STAND.defaultBlockState());
+        put(out, origin, facing, w - 2, 1, d - 2, Blocks.BREWING_STAND.defaultBlockState()); // cleric
+        put(out, origin, facing, w - 3, 1, d - 2, Blocks.CAULDRON.defaultBlockState());      // leatherworker
+        put(out, origin, facing, w - 2, 1, 1, Blocks.BOOKSHELF.defaultBlockState());
     }
 
     private static void watchtower(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int width = 5;
-        int height = 6 + level * 4;
-        BlockState wall = Blocks.COBBLESTONE_WALL.defaultBlockState();
-        BlockState solidWall = Blocks.COBBLESTONE.defaultBlockState();
+        int w = 5;
+        int h = 8 + level * 3;
 
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                for (int z = 0; z < width; z++) {
-                    boolean edge = x == 0 || z == 0 || x == width - 1 || z == width - 1;
-                    if (edge) put(out, origin, facing, x, y, z, y == height - 1 ? wall : solidWall);
+        clearance(out, origin, facing, w, w);
+        for (int x = 0; x < w; x++)
+            for (int z = 0; z < w; z++)
+                put(out, origin, facing, x, -1, z, FOOTING);
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                for (int z = 0; z < w; z++) {
+                    boolean edge = x == 0 || z == 0 || x == w - 1 || z == w - 1;
+                    boolean corner = (x == 0 || x == w - 1) && (z == 0 || z == w - 1);
+                    if (!edge) {
+                        put(out, origin, facing, x, y, z, y == 0 ? FLOOR : AIR);
+                    } else if (y >= h - 2) {
+                        put(out, origin, facing, x, y, z, Blocks.COBBLESTONE_WALL.defaultBlockState());
+                    } else if (corner) {
+                        put(out, origin, facing, x, y, z, POST);
+                    } else if (y % 4 == 3) {
+                        put(out, origin, facing, x, y, z, PANE);
+                    } else {
+                        put(out, origin, facing, x, y, z, Blocks.COBBLESTONE.defaultBlockState());
+                    }
                 }
             }
         }
-        put(out, origin, facing, width / 2, 0, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, width / 2, 1, 0, Blocks.AIR.defaultBlockState());
-        put(out, origin, facing, 1, height - 1, 1, Blocks.TORCH.defaultBlockState());
-        put(out, origin, facing, width - 2, height - 1, width - 2, Blocks.TORCH.defaultBlockState());
+
+        for (int y = 1; y < h - 2; y++) {
+            put(out, origin, facing, w / 2, y, w - 2, Blocks.LADDER.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing));
+        }
+        frontDoor(out, origin, facing, w / 2);
+        put(out, origin, facing, 1, h - 3, 1, LANTERN);
+        put(out, origin, facing, w - 2, h - 3, w - 2, LANTERN);
+        put(out, origin, facing, 1, 1, 1, Blocks.FLETCHING_TABLE.defaultBlockState()); // fletcher
     }
 
     private static void wallGate(List<BlockPlacement> out, BlockPos origin, Direction facing, int level) {
-        int length = 9 + level * 6;
-        int height = 3 + level;
-        BlockState wall = Blocks.COBBLESTONE_WALL.defaultBlockState();
+        int length = 11 + level * 6;
+        int h = 4 + level;
+        int mid = length / 2;
 
         for (int x = 0; x < length; x++) {
-            int mid = length / 2;
-            if (x == mid || x == mid + 1) continue; // gap for the gate
-            for (int y = 0; y < height; y++) {
-                put(out, origin, facing, x, y, 0, wall);
+            put(out, origin, facing, x, -1, 0, FOOTING);
+            if (x >= mid - 1 && x <= mid + 1) {
+                for (int y = 0; y < 3; y++) put(out, origin, facing, x, y, 0, AIR);
+                put(out, origin, facing, x, 0, -1, PATH);
+                put(out, origin, facing, x, 0, 1, PATH);
+                continue;
             }
+            for (int y = 0; y < h; y++) {
+                put(out, origin, facing, x, y, 0,
+                        y == h - 1 ? Blocks.COBBLESTONE_WALL.defaultBlockState()
+                                   : Blocks.STONE_BRICKS.defaultBlockState());
+            }
+            if (x % 6 == 0) put(out, origin, facing, x, h, 0, LANTERN);
         }
-        put(out, origin, facing, length / 2, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState());
-        put(out, origin, facing, length / 2 + 1, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState());
+
+        for (int y = 0; y < h + 1; y++) {
+            put(out, origin, facing, mid - 2, y, 0, POST);
+            put(out, origin, facing, mid + 2, y, 0, POST);
+        }
+        for (int x = mid - 1; x <= mid + 1; x++) {
+            put(out, origin, facing, x, 3, 0, BEAM);
+            for (int y = 4; y < h; y++) {
+                put(out, origin, facing, x, y, 0, Blocks.STONE_BRICKS.defaultBlockState());
+            }
+            put(out, origin, facing, x, 0, 0, Blocks.OAK_FENCE_GATE.defaultBlockState()
+                    .setValue(BlockStateProperties.HORIZONTAL_FACING, facing));
+        }
+        put(out, origin, facing, mid - 3, 1, 1, Blocks.GRINDSTONE.defaultBlockState()); // weaponsmith
+        put(out, origin, facing, mid - 2, h, 0, LANTERN);
+        put(out, origin, facing, mid + 2, h, 0, LANTERN);
     }
 }

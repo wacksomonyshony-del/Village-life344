@@ -11,7 +11,12 @@ import com.villageevolution.mod.village.VillageInstance;
 import com.villageevolution.mod.village.VillageManager;
 import com.villageevolution.mod.village.VillageSavedData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -39,6 +44,16 @@ public class VillagerJoinHandler {
         // Count the newcomer straight away rather than waiting for the next
         // village tick, so freshly bred/cured villagers show up in the total.
         VillageManager.refreshPopulation(serverLevel, village);
+
+        // Self-defence: an iron sword, the attribute needed to swing it (see
+        // ModAttributeHandler), and goals to retaliate against whatever hit them.
+        // This is deliberately reactive - villagers do not go hunting.
+        if (!villager.isBaby()) {
+            villager.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.IRON_SWORD));
+            villager.setDropChance(EquipmentSlot.MAINHAND, 0.0F);
+            GoalAccessHelper.addGoal(villager, 3, new MeleeAttackGoal(villager, 1.1D, false));
+            GoalAccessHelper.addTargetGoal(villager, 1, new HurtByTargetGoal(villager));
+        }
 
         // Universal caretaking + civilization-building behaviors.
         GoalAccessHelper.addGoal(villager, 6, new RepairIronGolemGoal(villager));

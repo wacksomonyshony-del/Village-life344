@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "CEC",
+    "EPE",
+    "CEC"
+  ],
+  "key": {
+    "C": {
+      "item": "minecraft:emerald"
+    },
+    "E": {
+      "item": "minecraft:obsidian"
+    },
+    "P": {
+      "item": "villageevolution:chunk_loader_advanced"
+    }
+  },
+  "result": {
+    "id": "villageevolution:chunk_loader_greater",
+    "count": 1
+  }
+}

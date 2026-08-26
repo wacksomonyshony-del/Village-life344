@@ -3,6 +3,7 @@ package com.villageevolution.mod.registry;
 import com.villageevolution.mod.VillagerEvolutionMod;
 import com.villageevolution.mod.item.BlueprintItem;
 import com.villageevolution.mod.village.BuildingType;
+import com.villageevolution.mod.block.ChunkLoaderTier;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
@@ -20,9 +21,20 @@ public final class ModItems {
 
     private static final Map<BuildingType, RegistryObject<Item>> BLUEPRINTS = new EnumMap<>(BuildingType.class);
 
-    /** Item form of the chunk loader block. */
-    public static final RegistryObject<Item> CHUNK_LOADER = ITEMS.register("chunk_loader",
-            () -> new BlockItem(ModBlocks.CHUNK_LOADER.get(), new Item.Properties()));
+    /** Item forms of the eight chunk loader blocks. */
+    private static final Map<ChunkLoaderTier, RegistryObject<Item>> CHUNK_LOADERS =
+            new EnumMap<>(ChunkLoaderTier.class);
+
+    static {
+        for (ChunkLoaderTier tier : ChunkLoaderTier.values()) {
+            CHUNK_LOADERS.put(tier, ITEMS.register(tier.registryName(),
+                    () -> new BlockItem(ModBlocks.chunkLoader(tier).get(), new Item.Properties())));
+        }
+    }
+
+    public static RegistryObject<Item> chunkLoader(ChunkLoaderTier tier) {
+        return CHUNK_LOADERS.get(tier);
+    }
 
     static {
         for (BuildingType type : BuildingType.values()) {

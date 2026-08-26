@@ -6,11 +6,13 @@
       "entries": [
         {
           "type": "minecraft:item",
-          "name": "villageevolution:chunk_loader"
+          "name": "villageevolution:chunk_loader_ultimate"
         }
       ],
       "conditions": [
-        { "condition": "minecraft:survives_explosion" }
+        {
+          "condition": "minecraft:survives_explosion"
+        }
       ]
     }
   ]

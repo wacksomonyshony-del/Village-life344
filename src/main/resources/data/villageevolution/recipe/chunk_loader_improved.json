@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "CEC",
+    "EPE",
+    "CEC"
+  ],
+  "key": {
+    "C": {
+      "item": "minecraft:redstone"
+    },
+    "E": {
+      "item": "minecraft:gold_ingot"
+    },
+    "P": {
+      "item": "villageevolution:chunk_loader_basic"
+    }
+  },
+  "result": {
+    "id": "villageevolution:chunk_loader_improved",
+    "count": 1
+  }
+}

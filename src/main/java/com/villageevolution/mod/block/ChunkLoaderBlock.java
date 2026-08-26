@@ -1,5 +1,6 @@
 package com.villageevolution.mod.block;
 
+import com.villageevolution.mod.ModConfigs;
 import com.villageevolution.mod.VillagerEvolutionMod;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -10,41 +11,51 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.common.world.ForgeChunkManager;
 
 /**
- * Keeps its own chunk loaded (and ticking) for as long as it exists, using
- * Forge's block-owned chunk tickets. The ticket is registered when the block
- * is placed and released when it is broken, and survives a server restart -
- * ForgeChunkManager persists block tickets in the level's forced-chunk data.
+ * Forces a centred square of chunks to stay loaded and ticking for as long as
+ * the block exists. Coverage comes from the block's tier, clamped by config.
  *
- * VillagerEvolutionMod#validateChunkTickets cleans up orphaned tickets on
- * world load, covering the case where the block was removed by something
- * that bypassed onRemove (world edits, chunk deletion, etc).
+ * Every ticket in the square is owned by this block's position, so breaking
+ * the block releases all of them in one call, and the orphan-cleanup callback
+ * in VillagerEvolutionMod can drop the whole set by position.
  */
 public class ChunkLoaderBlock extends Block {
 
-    public ChunkLoaderBlock(Properties properties) {
+    private final ChunkLoaderTier tier;
+
+    public ChunkLoaderBlock(Properties properties, ChunkLoaderTier tier) {
         super(properties);
+        this.tier = tier;
+    }
+
+    public ChunkLoaderTier getTier() {
+        return tier;
     }
 
     @Override
     public void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean isMoving) {
         super.onPlace(state, level, pos, oldState, isMoving);
         if (level instanceof ServerLevel serverLevel && !oldState.is(this)) {
-            setForced(serverLevel, pos, true);
+            setForced(serverLevel, pos, tier, true);
         }
     }
 
     @Override
     public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
         if (level instanceof ServerLevel serverLevel && !newState.is(this)) {
-            setForced(serverLevel, pos, false);
+            setForced(serverLevel, pos, tier, false);
         }
         super.onRemove(state, level, pos, newState, isMoving);
     }
 
-    /** Adds or removes this block's forced-chunk ticket. */
-    public static void setForced(ServerLevel level, BlockPos pos, boolean add) {
-        ChunkPos chunkPos = new ChunkPos(pos);
-        ForgeChunkManager.forceChunk(level, VillagerEvolutionMod.MOD_ID, pos,
-                chunkPos.x, chunkPos.z, add, /* ticking = */ true);
+    /** Adds or removes the whole square of forced-chunk tickets owned by this block. */
+    public static void setForced(ServerLevel level, BlockPos pos, ChunkLoaderTier tier, boolean add) {
+        int radius = ModConfigs.radiusFor(tier);
+        ChunkPos centre = new ChunkPos(pos);
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                ForgeChunkManager.forceChunk(level, VillagerEvolutionMod.MOD_ID, pos,
+                        centre.x + dx, centre.z + dz, add, /* ticking = */ true);
+            }
+        }
     }
 }

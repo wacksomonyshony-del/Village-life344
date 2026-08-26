@@ -10,6 +10,12 @@
   "item.villageevolution.blueprint_watchtower": "Watchtower Blueprint",
   "item.villageevolution.blueprint_wall_gate": "Wall Gate Blueprint",
   "item.villageevolution.blueprint_hospital": "Hospital Blueprint",
-  "block.villageevolution.chunk_loader": "Chunk Loader",
-  "item.villageevolution.chunk_loader": "Chunk Loader"
+  "block.villageevolution.chunk_loader_basic": "Basic Chunk Loader",
+  "block.villageevolution.chunk_loader_improved": "Improved Chunk Loader",
+  "block.villageevolution.chunk_loader_advanced": "Advanced Chunk Loader",
+  "block.villageevolution.chunk_loader_greater": "Greater Chunk Loader",
+  "block.villageevolution.chunk_loader_superior": "Superior Chunk Loader",
+  "block.villageevolution.chunk_loader_elite": "Elite Chunk Loader",
+  "block.villageevolution.chunk_loader_ultimate": "Ultimate Chunk Loader",
+  "block.villageevolution.chunk_loader_netherite": "Netherite Chunk Loader"
 }

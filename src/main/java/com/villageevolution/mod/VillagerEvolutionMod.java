@@ -7,6 +7,8 @@ import com.villageevolution.mod.registry.ModBlocks;
 import com.villageevolution.mod.registry.ModCreativeTab;
 import com.villageevolution.mod.registry.ModItems;
 import net.minecraftforge.common.world.ForgeChunkManager;
+import net.minecraftforge.fml.ModLoadingContext;
+import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -28,6 +30,7 @@ public class VillagerEvolutionMod {
         ModItems.ITEMS.register(modEventBus);
         ModCreativeTab.TABS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, ModConfigs.SPEC);
 
         MinecraftForge.EVENT_BUS.register(new VillageTickHandler());
         MinecraftForge.EVENT_BUS.register(new VillagerJoinHandler());

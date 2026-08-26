@@ -25,7 +25,9 @@ import java.util.WeakHashMap;
 public final class GoalAccessHelper {
 
     private static final String FIELD_NAME = "goalSelector";
+    private static final String TARGET_FIELD_NAME = "targetSelector";
     private static Field goalSelectorField;
+    private static Field targetSelectorField;
 
     // Tracks which goal classes we've already added to which mob instances,
     // so re-firing EntityJoinLevelEvent (e.g. on dimension change) doesn't
@@ -46,6 +48,27 @@ public final class GoalAccessHelper {
             }
         } catch (ReflectiveOperationException e) {
             VillagerEvolutionMod.LOGGER.error("Failed to add custom AI goal {} to {}",
+                    goal.getClass().getSimpleName(), mob, e);
+        }
+    }
+
+    /** Same as addGoal, but for the target selector (what the mob decides to attack). */
+    public static void addTargetGoal(Mob mob, int priority, Goal goal) {
+        Set<Class<?>> alreadyAdded = PATCHED.computeIfAbsent(mob, m -> new HashSet<>());
+        if (!alreadyAdded.add(goal.getClass())) return;
+
+        try {
+            if (targetSelectorField == null) {
+                Field field = Mob.class.getDeclaredField(TARGET_FIELD_NAME);
+                field.setAccessible(true);
+                targetSelectorField = field;
+            }
+            GoalSelector selector = (GoalSelector) targetSelectorField.get(mob);
+            if (selector != null) {
+                selector.addGoal(priority, goal);
+            }
+        } catch (ReflectiveOperationException e) {
+            VillagerEvolutionMod.LOGGER.error("Failed to add custom target goal {} to {}",
                     goal.getClass().getSimpleName(), mob, e);
         }
     }
